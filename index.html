@@ -331,6 +331,10 @@
         <span class="cboxes" id="compBoxesDots"><i class="cbox"></i></span>
         <span class="compcheck-count" id="compCountDots">0/1</span>
       </div>
+      <div class="compcheck-row">
+        <span class="compcheck-label">Angedockt</span>
+        <span class="cboxes" id="compBoxesDocked"><i class="cbox"></i></span>
+      </div>
       <div class="compcheck-status" id="compStatus">Layout unvollständig</div>
     </div>
     <div id="imageRow" class="hidden" style="margin-top:12px">
@@ -1653,13 +1657,20 @@ function updateCompCheck() {
   document.getElementById("compCountDots").textContent = `${dCount}/1`;
 
   const complete = compositionComplete();
-  document.getElementById("compCheck").classList.toggle("done", complete);
-  document.getElementById("compStatus").textContent = complete
+  const docked = floatingSurfaces().length === 0;
+  document.querySelectorAll("#compBoxesDocked .cbox").forEach((box) => {
+    box.classList.toggle("done", docked);
+  });
+  const exportReady = complete && docked;
+  document.getElementById("compCheck").classList.toggle("done", exportReady);
+  document.getElementById("compStatus").textContent = exportReady
     ? "Layout vollständig — export-bereit"
-    : "Layout unvollständig — Export gesperrt";
+    : !complete
+      ? "Layout unvollständig — Export gesperrt"
+      : "Flächen andocken für Export";
 
-  btnCopyEl.disabled = !complete;
-  btnDownloadEl.disabled = !complete;
+  btnCopyEl.disabled = !exportReady;
+  btnDownloadEl.disabled = !exportReady;
 }
 
 // Animations-Reihenfolge: Verlauf sortiert nach Helligkeits-Rang (hell
