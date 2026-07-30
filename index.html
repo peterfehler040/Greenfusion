@@ -1659,7 +1659,7 @@ function updateCompCheck() {
   const complete = compositionComplete();
   const docked = floatingSurfaces().length === 0;
   document.querySelectorAll("#compBoxesDocked .cbox").forEach((box) => {
-    box.classList.toggle("done", docked);
+    box.classList.toggle("done", docked && state.surfaces.length >= 2);
   });
   const exportReady = complete && docked;
   document.getElementById("compCheck").classList.toggle("done", exportReady);
