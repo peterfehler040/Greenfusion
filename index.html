@@ -1202,8 +1202,22 @@ formatSelect.appendChild(customOption);
 // Verlaufsfläche geschoben), werden Flächen, die nicht mehr vollständig
 // im neuen Raster liegen, entfernt statt still verzerrt — passend zum
 // Prinzip "ungültig → blockieren/melden, nie stillschweigend korrigieren".
-function applyFormat() {
+//
+// Der Rasternullpunkt (ox/oy) verschiebt sich je nach Format um bis zu
+// einen halben Modul-Rand (z. B. 16:9 hat 15px Rand links, 1:1 keinen —
+// 1920 ist kein glattes Vielfaches von MODULE_SIZE). Ohne Ausgleich fielen
+// randständige Flächen beim Formatwechsel fälschlich aus dem "passt nicht
+// mehr"-Filter, obwohl objektiv mehr Platz da war (Peter, 30.07.2026:
+// jeder Formatwechsel löschte praktisch alle Flächen). Deshalb: Flächen
+// zuerst um exakt die alte→neue Randverschiebung mitschieben (reine
+// Nullpunkt-Korrektur, keine Verzerrung), erst danach auf echten
+// Platzmangel prüfen.
+function applyFormat(oldG) {
   const g = geometry();
+  if (oldG) {
+    const dx = g.ox - oldG.ox, dy = g.oy - oldG.oy;
+    if (dx || dy) state.surfaces.forEach(s => { s.x += dx; s.y += dy; });
+  }
   const before = state.surfaces.length;
   state.surfaces = state.surfaces.filter(s =>
     s.x >= g.ox && s.y >= g.oy &&
@@ -1223,6 +1237,7 @@ function applyFormat() {
 }
 
 formatSelect.addEventListener("change", () => {
+  const oldG = geometry();
   if (formatSelect.value === "custom") {
     const f = formatSize();
     state.customSize = { w: f.w, h: f.h };
@@ -1234,7 +1249,7 @@ formatSelect.addEventListener("change", () => {
     state.customSize = null;
     customRow.classList.add("hidden");
   }
-  applyFormat();
+  applyFormat(oldG);
 });
 
 function clampDim(v) {
@@ -1246,10 +1261,11 @@ function applyCustomSize() {
   const w = clampDim(customW.value);
   const h = clampDim(customH.value);
   if (w === null || h === null) return;
+  const oldG = geometry();
   customW.value = w;
   customH.value = h;
   state.customSize = { w, h };
-  applyFormat();
+  applyFormat(oldG);
 }
 customW.addEventListener("change", applyCustomSize);
 customH.addEventListener("change", applyCustomSize);
