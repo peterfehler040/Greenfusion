@@ -397,7 +397,10 @@
     </label>
     <button class="btn primary" id="btnCopy" style="text-align:center">SVG kopieren</button>
     <div class="outrow">
-      <button class="linkbtn" id="btnDownload">Herunterladen</button>
+      <span style="display:flex;gap:10px;align-items:center">
+        <button class="linkbtn" id="btnDownload">Herunterladen</button>
+        <button class="linkbtn" id="btnCopyLink">🔗 Design-Link</button>
+      </span>
       <span style="display:flex;gap:10px;align-items:center">
         <button class="linkbtn danger" id="btnClear">Löschen</button>
         <button class="helpbtn" id="btnHelp" aria-label="Shortcuts anzeigen">?</button>
@@ -1888,8 +1891,119 @@ function exportString() {
   return renderSVG({ chrome: false, noBg, fullDots: true });
 }
 
+/* ================= Teilen (Design-Link) =================
+   Kodiert den kompletten Design-Zustand (Format, Modus, Flächen,
+   Animations-Parameter) direkt ins URL-Hash — kein Server, keine
+   Speicherung. Funktioniert überall dort, wo die Datei unter einer
+   festen URL erreichbar ist (z. B. GitHub Pages); als file://-Link
+   nur auf demselben Rechner nutzbar.
+
+   Bildflächen werden bewusst OHNE Bilddaten geteilt (nur Typ +
+   Geometrie) — das eingebettete Base64-Bild wäre oft 50–300 KB groß
+   und würde jeden Link sprengen. Nach dem Laden erscheint die Fläche
+   als leerer Platzhalter (bestehendes Rendering, s. renderSVG) und
+   muss neu befüllt werden. */
+
+const SHARE_VERSION = 1;
+const MAX_SHARE_LEN = 6000; // grobe Grenze, ab der Slack/Mail/Notion-Previews Links kappen
+
+function utf8ToBase64Url(str) {
+  const b64 = btoa(unescape(encodeURIComponent(str)));
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function base64UrlToUtf8(str) {
+  let b64 = str.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  return decodeURIComponent(escape(atob(b64)));
+}
+
+function buildShareState() {
+  return {
+    v: SHARE_VERSION,
+    formatIndex: state.formatIndex,
+    customSize: state.customSize,
+    mode: state.mode,
+    // Bildflächen: nur Typ + Geometrie, kein img (siehe Kommentar oben)
+    surfaces: state.surfaces.map(s => ({ x: s.x, y: s.y, w: s.w, h: s.h, type: s.type })),
+    animCurves: state.animCurves,
+    animDuration: state.animDuration,
+    animStagger: state.animStagger
+  };
+}
+
+function shareLink() {
+  const json = JSON.stringify(buildShareState());
+  const code = utf8ToBase64Url(json);
+  return { url: `${location.origin}${location.pathname}#s=${code}`, len: code.length };
+}
+
+function applyShareState(data) {
+  if (!data || data.v !== SHARE_VERSION) {
+    toast("Link-Format unbekannt — evtl. von einer älteren/neueren Tool-Version");
+    return false;
+  }
+  state.formatIndex = data.formatIndex || 0;
+  state.customSize = data.customSize || null;
+  state.surfaces = Array.isArray(data.surfaces)
+    ? data.surfaces.map(s => ({ x: s.x, y: s.y, w: s.w, h: s.h, type: s.type, img: null }))
+    : [];
+  state.animCurves = Array.isArray(data.animCurves) ? data.animCurves : [];
+  state.animDuration = typeof data.animDuration === "number" ? data.animDuration : 700;
+  state.animStagger = typeof data.animStagger === "number" ? data.animStagger : 150;
+  state.selection = [];
+
+  // Format-UI synchronisieren — bewusst OHNE applyFormat(), da die
+  // geladenen Flächen bereits zum Ziel-Format passen (wurden ja daraus
+  // exportiert) und applyFormat() sonst gültige Flächen rausfiltern könnte.
+  if (state.customSize) {
+    formatSelect.value = "custom";
+    customW.value = state.customSize.w;
+    customH.value = state.customSize.h;
+    customRow.classList.remove("hidden");
+  } else {
+    formatSelect.value = String(state.formatIndex);
+    customRow.classList.add("hidden");
+  }
+  animDurationInput.value = state.animDuration;
+  animStaggerInput.value = state.animStagger;
+  setMode(data.mode === "light" ? "light" : "dark"); // rendert bereits
+
+  history = [JSON.stringify(state.surfaces)];
+  hIndex = 0;
+  return true;
+}
+
+function loadStateFromHash() {
+  const m = location.hash.match(/#s=(.+)$/);
+  if (!m) return;
+  try {
+    const data = JSON.parse(base64UrlToUtf8(decodeURIComponent(m[1])));
+    const hadImages = Array.isArray(data.surfaces) && data.surfaces.some(s => s.type === "image");
+    if (applyShareState(data)) {
+      toast(hadImages ? "Design geladen — Bildfläche(n) müssen neu hochgeladen werden" : "Design aus Link geladen");
+    }
+  } catch (e) {
+    toast("Link konnte nicht gelesen werden");
+  }
+}
+
 const btnCopyEl = document.getElementById("btnCopy");
 const btnDownloadEl = document.getElementById("btnDownload");
+const btnCopyLinkEl = document.getElementById("btnCopyLink");
+
+btnCopyLinkEl.addEventListener("click", async () => {
+  const { url, len } = shareLink();
+  if (len > MAX_SHARE_LEN) {
+    toast("Layout zu groß für einen Link — bitte SVG exportieren");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    toast("Design-Link kopiert");
+  } catch (e) {
+    toast("Kopieren fehlgeschlagen");
+  }
+});
 
 btnCopyEl.addEventListener("click", async () => {
   if (!compositionComplete()) {
@@ -1931,6 +2045,7 @@ document.getElementById("btnClear").addEventListener("click", () => {
 });
 
 /* ================= Start ================= */
+loadStateFromHash(); // #s=... in der URL lädt ein geteiltes Design, bevor der erste Render läuft
 render();
 </script>
 </body>
