@@ -396,6 +396,7 @@
       Hintergrund mitexportieren
     </label>
     <button class="btn primary" id="btnCopy" style="text-align:center">SVG kopieren</button>
+    <button class="btn" id="btnLottie" style="text-align:center;margin-top:8px">Lottie exportieren (.json)</button>
     <div class="outrow">
       <span style="display:flex;gap:10px;align-items:center">
         <button class="linkbtn" id="btnDownload">Herunterladen</button>
@@ -1690,6 +1691,7 @@ function updateCompCheck() {
 
   btnCopyEl.disabled = !exportReady;
   btnDownloadEl.disabled = !exportReady;
+  btnLottieEl.disabled = !exportReady;
 }
 
 // Animations-Reihenfolge: Verlauf sortiert nach Helligkeits-Rang (hell
@@ -1891,6 +1893,235 @@ function exportString() {
   return renderSVG({ chrome: false, noBg, fullDots: true });
 }
 
+/* ================= Lottie-Export =================
+   Baut ein eigenständiges Bodymovin/Lottie-JSON aus dem aktuellen Zustand.
+   Jede Fläche wird ein eigener Layer mit Scale-Keyframes nach exakt derselben
+   Anker-Logik wie playAnimation() (animOrder/animAnchor/animCurves) — nur als
+   echte Keyframes statt Web-Animations-API, also außerhalb des Editors
+   abspielbar (z. B. in Videos, Apps, LottieFiles).
+
+   Verlauf/Weiß werden Vektor-Shape-Layer (Rechteck + Verlaufs-/Volltonfüllung)
+   — bleiben beim Skalieren gestochen scharf. Pixel-Kachel und Bildflächen
+   werden gerasterte Bild-Layer (Canvas → PNG, eingebettet): ein Punktmuster
+   als hunderte Vektor-Kreise wäre unnötig komplex, zumal sich die Kachel nur
+   als Block bewegt, nicht Punkt für Punkt. Hintergrund (Modusfarbe + Textur +
+   volles Punktraster, wie beim SVG-Export mit fullDots) ist ein einzelner
+   statischer Bild-Layer ganz unten.
+
+   Format-Details (Rechteck/Gradient/Fill/Transform/Keyframe-Easing) gegen die
+   offizielle Lottie-Spec (github.com/lottie/lottie-spec) geprüft, u. a.:
+   Layer-Reihenfolge = erstes Element im Array liegt oben (daher unten
+   .reverse()), Rechteck-„p" ist der Mittelpunkt, Gradient-Stops sind ein
+   flacher [offset,r,g,b, …]-Array (0–1), Easing-Handles o/i entsprechen 1:1
+   den CSS-cubic-bezier-Kontrollpunkten, Hold-Segmente über h:1 statt über
+   eine flache (aber technisch auch funktionierende) Kurve. */
+
+const LOTTIE_FPS = 60;
+const msToFrames = ms => Math.round(ms / 1000 * LOTTIE_FPS);
+
+function hexToRgb01(hex) {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+function canvasPng(w, h, drawFn) {
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(w));
+  c.height = Math.max(1, Math.round(h));
+  drawFn(c.getContext("2d"), c.width, c.height);
+  return c.toDataURL("image/png");
+}
+
+function loadImageEl(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Bild konnte nicht geladen werden"));
+    img.src = src;
+  });
+}
+
+// Hintergrund-Layer: Modusfarbe + Textur (Cover-Fit) + volles Punktraster,
+// Punkte nur unter Pixel-Kachel-Flächen ausgespart (wie fullDots in renderSVG
+// — Verlauf/Weiß/Bild-Flächen liegen als eigene Layer darüber und decken den
+// Rest beim Reinwachsen ab).
+async function rasterizeLottieBackground(g) {
+  const bgIm = await loadImageEl(BG_IMAGES[state.mode].src);
+  const modeDef = MODES[state.mode];
+  const dotBlockers = state.surfaces.filter(s => s.type === "dots");
+  return canvasPng(g.W, g.H, (ctx, W, H) => {
+    ctx.fillStyle = modeDef.bg;
+    ctx.fillRect(0, 0, W, H);
+    const k = Math.max(W / bgIm.naturalWidth, H / bgIm.naturalHeight);
+    const w = bgIm.naturalWidth * k, h = bgIm.naturalHeight * k;
+    ctx.drawImage(bgIm, (W - w) / 2, (H - h) / 2, w, h);
+    ctx.fillStyle = modeDef.dot;
+    ctx.globalAlpha = modeDef.dotOpacity;
+    for (let j = 0; j <= g.rows; j++) {
+      for (let i = 0; i <= g.cols; i++) {
+        const x = g.ox + i * g.m, y = g.oy + j * g.m;
+        if (!dotHidden(x, y, dotBlockers)) {
+          ctx.beginPath();
+          ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+  });
+}
+
+// Pixel-Kachel als eigenes Raster-Bild, lokal zur Fläche (0,0)–(w,h).
+function rasterizeDotsTile(s) {
+  return canvasPng(s.w, s.h, (ctx, W, H) => {
+    ctx.fillStyle = DOTTILE.color;
+    const sp = DOTTILE.spacing;
+    for (let y = sp / 2; y <= H - sp / 2 + 0.01; y += sp) {
+      for (let x = sp / 2; x <= W - sp / 2 + 0.01; x += sp) {
+        ctx.beginPath();
+        ctx.arc(x, y, DOTTILE.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  });
+}
+
+// Bildfläche als eigenes Raster-Bild (Cover-Fit im Rahmen wie imageDrawRect),
+// leerer Platzhalter (graues Feld + Diagonalkreuz), falls noch kein Bild
+// geladen ist — identisch zur Darstellung in renderSVG.
+async function rasterizeImageSurface(s) {
+  if (!s.img) {
+    return canvasPng(s.w, s.h, (ctx, W, H) => {
+      ctx.fillStyle = PLACEHOLDER_FILL;
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = "#5A6B66";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(W, H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(W, 0); ctx.lineTo(0, H); ctx.stroke();
+    });
+  }
+  const img = await loadImageEl(s.img.src);
+  const d = imageDrawRect({ ...s, x: 0, y: 0, w: s.w, h: s.h });
+  return canvasPng(s.w, s.h, (ctx, W, H) => {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
+    ctx.drawImage(img, d.x, d.y, d.w, d.h);
+    ctx.restore();
+  });
+}
+
+async function renderLottie() {
+  const g = geometry();
+  const order = animOrder();
+  const shades = shadeMap(state.surfaces);
+
+  // Timing zuerst (unabhängig vom Bild-/Canvas-Laden): Start-Frame je Fläche
+  // aus der Stagger-Kette, genau wie playAnimation() per kumulativem delay.
+  let delay = 0;
+  const timing = {};
+  order.forEach((idx, step) => {
+    timing[idx] = { step, startFrame: msToFrames(delay) };
+    delay += state.animStagger;
+  });
+  const durFrames = Math.max(1, msToFrames(state.animDuration));
+  const totalFrames = Math.max(
+    ...order.map(idx => timing[idx].startFrame + durFrames),
+    durFrames
+  );
+  // Lottie behandelt "op" (Layer-/Comp-Sichtbarkeitsende) als exklusiv — ohne
+  // Puffer verschwindet die letzte Fläche exakt in dem Frame, in dem ihr
+  // letztes Keyframe (volle Größe) erreicht wird. Per Test mit lottie-web
+  // gefunden (30.07.2026): ohne +1 blieb die letzte Fläche bei Scale 0.
+  const compOut = totalFrames + 1;
+
+  const assets = [{ id: "bg", w: g.W, h: g.H, u: "", p: await rasterizeLottieBackground(g), e: 1 }];
+  const surfaceLayers = [];
+  let ind = 1;
+
+  for (let idx = 0; idx < state.surfaces.length; idx++) {
+    const s = state.surfaces[idx];
+    const t = timing[idx] || { step: 0, startFrame: 0 };
+    const { axis, edge } = animAnchor(idx, order);
+    const anchorMap = {
+      left:   [0,        s.h / 2],
+      right:  [s.w,       s.h / 2],
+      top:    [s.w / 2,   0],
+      bottom: [s.w / 2,   s.h]
+    };
+    const a = anchorMap[edge];
+    const p = [s.x + a[0], s.y + a[1]];
+    const bez = state.animCurves[t.step] || DEFAULT_ANIM_CURVE;
+    const fromScale = axis === "x" ? [0, 100, 100] : [100, 0, 100];
+
+    const keyframes = [];
+    if (t.startFrame > 0) keyframes.push({ t: 0, s: fromScale, h: 1 });
+    keyframes.push({
+      t: t.startFrame,
+      s: fromScale,
+      o: { x: [bez.x1, bez.x1, bez.x1], y: [bez.y1, bez.y1, bez.y1] },
+      i: { x: [bez.x2, bez.x2, bez.x2], y: [bez.y2, bez.y2, bez.y2] }
+    });
+    keyframes.push({ t: t.startFrame + durFrames, s: [100, 100, 100] });
+
+    const ks = {
+      o: { a: 0, k: 100 },
+      r: { a: 0, k: 0 },
+      p: { a: 0, k: p },
+      a: { a: 0, k: a },
+      s: { a: 1, k: keyframes }
+    };
+
+    if (s.type === "gradient" || s.type === "white") {
+      const shape = { ty: "gr", nm: TYPE_LABELS[s.type] || s.type, it: [] };
+      shape.it.push({ ty: "rc", nm: "rect", p: { a: 0, k: [s.w / 2, s.h / 2] }, s: { a: 0, k: [s.w, s.h] }, r: { a: 0, k: 0 } });
+      if (s.type === "gradient") {
+        const st = shades[idx] === 0 ? SHADE0_STOPS : shades[idx] === 1 ? SHADE1_STOPS : SHADE2_STOPS;
+        const c0 = hexToRgb01(st.from), c1 = hexToRgb01(st.to);
+        shape.it.push({
+          ty: "gf", nm: "gradient", o: { a: 0, k: 100 }, r: 1, bm: 0,
+          g: { p: 2, k: { a: 0, k: [0, ...c0, 1, ...c1] } },
+          s: { a: 0, k: [0, 0] }, e: { a: 0, k: [s.w, s.h] }, t: 1
+        });
+      } else {
+        shape.it.push({ ty: "fl", nm: "fill", o: { a: 0, k: 100 }, c: { a: 0, k: [...hexToRgb01(WHITE_HEX), 1] } });
+      }
+      shape.it.push({ ty: "tr", p: { a: 0, k: [0, 0] }, a: { a: 0, k: [0, 0] }, s: { a: 0, k: [100, 100] }, r: { a: 0, k: 0 }, o: { a: 0, k: 100 } });
+      surfaceLayers.push({
+        ddd: 0, ind: ind++, ty: 4, nm: TYPE_LABELS[s.type] || s.type,
+        sr: 1, ks, ao: 0, shapes: [shape],
+        ip: 0, op: compOut, st: 0, bm: 0
+      });
+    } else {
+      const data = s.type === "dots" ? rasterizeDotsTile(s) : await rasterizeImageSurface(s);
+      const assetId = "img" + idx;
+      assets.push({ id: assetId, w: Math.round(s.w), h: Math.round(s.h), u: "", p: data, e: 1 });
+      surfaceLayers.push({
+        ddd: 0, ind: ind++, ty: 2, nm: TYPE_LABELS[s.type] || s.type,
+        refId: assetId, sr: 1, ks, ao: 0,
+        ip: 0, op: compOut, st: 0, bm: 0
+      });
+    }
+  }
+
+  const bgLayer = {
+    ddd: 0, ind: ind++, ty: 2, nm: "Hintergrund", refId: "bg", sr: 1,
+    ks: {
+      o: { a: 0, k: 100 }, r: { a: 0, k: 0 },
+      p: { a: 0, k: [g.W / 2, g.H / 2] },
+      a: { a: 0, k: [g.W / 2, g.H / 2] },
+      s: { a: 0, k: [100, 100] }
+    },
+    ao: 0, ip: 0, op: totalFrames, st: 0, bm: 0
+  };
+
+  return {
+    v: "5.9.0", fr: LOTTIE_FPS, ip: 0, op: compOut,
+    w: g.W, h: g.H, nm: "GreenFusion Pattern",
+    ddd: 0, assets,
+    layers: [...surfaceLayers].reverse().concat([bgLayer])
+  };
+}
+
 /* ================= Teilen (Design-Link) =================
    Kodiert den kompletten Design-Zustand (Format, Modus, Flächen,
    Animations-Parameter) direkt ins URL-Hash — kein Server, keine
@@ -1989,6 +2220,7 @@ function loadStateFromHash() {
 
 const btnCopyEl = document.getElementById("btnCopy");
 const btnDownloadEl = document.getElementById("btnDownload");
+const btnLottieEl = document.getElementById("btnLottie");
 const btnCopyLinkEl = document.getElementById("btnCopyLink");
 
 btnCopyLinkEl.addEventListener("click", async () => {
@@ -2030,6 +2262,32 @@ btnDownloadEl.addEventListener("click", () => {
   a.download = `greenfusion-${f.w}x${f.h}-${Date.now()}.svg`;
   a.click();
   URL.revokeObjectURL(a.href);
+});
+
+btnLottieEl.addEventListener("click", async () => {
+  if (!compositionComplete()) {
+    toast("Layout unvollständig — erst 3 Verlauf- + 1 Pixel-Fläche anlegen");
+    return;
+  }
+  btnLottieEl.disabled = true;
+  const prevLabel = btnLottieEl.textContent;
+  btnLottieEl.textContent = "Rendert …";
+  try {
+    const f = formatSize();
+    const data = await renderLottie();
+    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `greenfusion-${f.w}x${f.h}-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("Lottie exportiert");
+  } catch (e) {
+    toast("Lottie-Export fehlgeschlagen");
+  } finally {
+    btnLottieEl.textContent = prevLabel;
+    btnLottieEl.disabled = !compositionComplete();
+  }
 });
 
 document.getElementById("btnHelp").addEventListener("click", () => {
