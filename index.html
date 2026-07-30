@@ -397,6 +397,7 @@
     </label>
     <button class="btn primary" id="btnCopy" style="text-align:center">SVG kopieren</button>
     <button class="btn" id="btnLottie" style="text-align:center;margin-top:8px">Lottie exportieren (.json)</button>
+    <button class="btn" id="btnVideo" style="text-align:center;margin-top:8px">Video exportieren (.webm)</button>
     <div class="outrow">
       <span style="display:flex;gap:10px;align-items:center">
         <button class="linkbtn" id="btnDownload">Herunterladen</button>
@@ -1692,6 +1693,7 @@ function updateCompCheck() {
   btnCopyEl.disabled = !exportReady;
   btnDownloadEl.disabled = !exportReady;
   btnLottieEl.disabled = !exportReady;
+  btnVideoEl.disabled = !exportReady;
 }
 
 // Animations-Reihenfolge: Verlauf sortiert nach Helligkeits-Rang (hell
@@ -2122,6 +2124,188 @@ async function renderLottie() {
   };
 }
 
+/* ================= Video-Export (.webm) =================
+   Nimmt die Wachstums-Sequenz als echtes Video auf — Canvas-Zeichnen pro
+   Frame (Pendant zu renderSVG/renderLottie, aber prozedural statt
+   deklarativ) + MediaRecorder/captureStream, komplett ohne externe
+   Bibliothek. Läuft in Echtzeit mit (dauert also so lange wie die
+   Animation selbst) — MediaRecorder verankert seine Frame-Zeitstempel an
+   der tatsächlichen Aufnahmezeit, ein „schnelleres" Rendern würde die
+   Wiedergabegeschwindigkeit verfälschen.
+
+   Bewusst WebM statt MP4: MediaRecorder liefert WebM browserübergreifend
+   zuverlässig, MP4 nur bei Safari sicher und bei Chrome nur je nach
+   Hardware-Encoder des Rechners — ein Encoder für garantiertes MP4 wäre
+   die erste externe Abhängigkeit im ganzen Tool. Peter hat sich bewusst
+   für WebM ohne neue Abhängigkeit entschieden (30.07.2026). */
+
+const VIDEO_FPS = 30;
+
+// Kubische Bezier-Kurve umkehren: löst Bx(t) = u nach t (Newton-Raphson,
+// wie Browser intern bei CSS cubic-bezier()) und liefert By(t) — dasselbe
+// Ergebnis, das el.animate()/lottie-web für dieselbe Kurve produzieren.
+function cubicBezierEase(x1, y1, x2, y2, u) {
+  const bx = t => { const mt = 1 - t; return 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t; };
+  const bxSlope = t => { const mt = 1 - t; return 3 * mt * mt * x1 + 6 * mt * t * (x2 - x1) + 3 * t * t * (1 - x2); };
+  const by = t => { const mt = 1 - t; return 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t; };
+  let t = Math.min(Math.max(u, 0), 1);
+  for (let i = 0; i < 8; i++) {
+    const dx = bx(t) - u;
+    if (Math.abs(dx) < 1e-5) break;
+    const d = bxSlope(t);
+    if (Math.abs(d) < 1e-6) break;
+    t = Math.min(Math.max(t - dx / d, 0), 1);
+  }
+  return by(t);
+}
+
+// Stagger-Timing in Millisekunden (Pendant zur Frame-Version in
+// renderLottie() — bewusst separat gehalten, damit an der bereits
+// getesteten/live geschalteten Lottie-Logik nichts angefasst wird).
+function staggerTimingMs() {
+  const order = animOrder();
+  let delay = 0;
+  const timing = {};
+  order.forEach((idx, step) => {
+    timing[idx] = { step, startMs: delay };
+    delay += state.animStagger;
+  });
+  const durMs = Math.max(1, state.animDuration);
+  const totalMs = Math.max(...order.map(idx => timing[idx].startMs + durMs), durMs);
+  return { order, timing, durMs, totalMs };
+}
+
+// Wachstumsfortschritt (0–1) einer Fläche zu einem gegebenen Zeitpunkt.
+function surfaceProgressAt(idx, timing, durMs, elapsedMs) {
+  const t = timing[idx];
+  if (!t) return 1;
+  if (elapsedMs <= t.startMs) return 0;
+  if (elapsedMs >= t.startMs + durMs) return 1;
+  const bez = state.animCurves[t.step] || DEFAULT_ANIM_CURVE;
+  return cubicBezierEase(bez.x1, bez.y1, bez.x2, bez.y2, (elapsedMs - t.startMs) / durMs);
+}
+
+// Eine Fläche in ihrer AKTUELLEN (unskalierten) Weltposition zeichnen —
+// exakt dieselbe Fülllogik wie renderSVG/rasterizeDotsTile/
+// rasterizeImageSurface, nur direkt auf den Haupt-Canvas statt als
+// separates Asset.
+function drawSurfaceFill(ctx, s, idx, shades, preloadedImages) {
+  if (s.type === "gradient") {
+    const shade = shades[idx] || 0;
+    const st = shade === 0 ? SHADE0_STOPS : shade === 1 ? SHADE1_STOPS : SHADE2_STOPS;
+    const grad = ctx.createLinearGradient(s.x, s.y, s.x + s.w, s.y + s.h);
+    grad.addColorStop(0, st.from);
+    grad.addColorStop(1, st.to);
+    ctx.fillStyle = grad;
+    ctx.fillRect(s.x, s.y, s.w, s.h);
+  } else if (s.type === "white") {
+    ctx.fillStyle = WHITE_HEX;
+    ctx.fillRect(s.x, s.y, s.w, s.h);
+  } else if (s.type === "dots") {
+    ctx.fillStyle = DOTTILE.color;
+    const sp = DOTTILE.spacing;
+    for (let y = s.y + sp / 2; y <= s.y + s.h - sp / 2 + 0.01; y += sp) {
+      for (let x = s.x + sp / 2; x <= s.x + s.w - sp / 2 + 0.01; x += sp) {
+        ctx.beginPath();
+        ctx.arc(x, y, DOTTILE.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (s.type === "image") {
+    if (s.img && preloadedImages[idx]) {
+      const d = imageDrawRect(s);
+      ctx.save();
+      ctx.beginPath(); ctx.rect(s.x, s.y, s.w, s.h); ctx.clip();
+      ctx.drawImage(preloadedImages[idx], d.x, d.y, d.w, d.h);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = PLACEHOLDER_FILL;
+      ctx.fillRect(s.x, s.y, s.w, s.h);
+      ctx.strokeStyle = "#5A6B66";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x + s.w, s.y + s.h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(s.x + s.w, s.y); ctx.lineTo(s.x, s.y + s.h); ctx.stroke();
+    }
+  }
+}
+
+// Ein komplettes Frame zeichnen: Hintergrund (vorgerastert, wie beim
+// Lottie-Export) + jede Fläche mit ihrer aktuellen Skalierung, vom
+// Anker aus wachsend (dieselbe Anker-Logik wie playAnimation()/renderLottie).
+function drawVideoFrame(ctx, g, bgImg, order, timing, durMs, elapsedMs, preloadedImages) {
+  ctx.clearRect(0, 0, g.W, g.H);
+  ctx.drawImage(bgImg, 0, 0, g.W, g.H);
+  const shades = shadeMap(state.surfaces);
+  state.surfaces.forEach((s, idx) => {
+    const { axis, edge } = animAnchor(idx, order);
+    const progress = surfaceProgressAt(idx, timing, durMs, elapsedMs);
+    const anchorMap = {
+      left:   [s.x,           s.y + s.h / 2],
+      right:  [s.x + s.w,     s.y + s.h / 2],
+      top:    [s.x + s.w / 2, s.y],
+      bottom: [s.x + s.w / 2, s.y + s.h]
+    };
+    const [ax, ay] = anchorMap[edge];
+    const sx = axis === "x" ? progress : 1;
+    const sy = axis === "y" ? progress : 1;
+    if (sx <= 0.0001 || sy <= 0.0001) return;
+    ctx.save();
+    ctx.translate(ax, ay);
+    ctx.scale(sx, sy);
+    ctx.translate(-ax, -ay);
+    drawSurfaceFill(ctx, s, idx, shades, preloadedImages);
+    ctx.restore();
+  });
+}
+
+function pickVideoMime() {
+  if (typeof MediaRecorder === "undefined") return null;
+  return ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"].find(m => MediaRecorder.isTypeSupported(m)) || null;
+}
+
+async function exportVideo(onProgress) {
+  const mimeType = pickVideoMime();
+  if (!mimeType) throw new Error("MediaRecorder/WebM wird von diesem Browser nicht unterstützt");
+
+  const g = geometry();
+  const { order, timing, durMs, totalMs } = staggerTimingMs();
+  const bgSrc = await rasterizeLottieBackground(g);
+  const bgImg = await loadImageEl(bgSrc);
+  const preloadedImages = {};
+  for (let idx = 0; idx < state.surfaces.length; idx++) {
+    const s = state.surfaces[idx];
+    if (s.type === "image" && s.img) preloadedImages[idx] = await loadImageEl(s.img.src);
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = g.W;
+  canvas.height = g.H;
+  const ctx = canvas.getContext("2d");
+
+  const stream = canvas.captureStream(VIDEO_FPS);
+  const recorder = new MediaRecorder(stream, { mimeType });
+  const chunks = [];
+  recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  const stopped = new Promise(resolve => { recorder.onstop = resolve; });
+
+  recorder.start();
+  const t0 = performance.now();
+  await new Promise(resolve => {
+    function tick() {
+      const elapsedMs = performance.now() - t0;
+      drawVideoFrame(ctx, g, bgImg, order, timing, durMs, Math.min(elapsedMs, totalMs), preloadedImages);
+      if (onProgress) onProgress(Math.min(100, Math.round((elapsedMs / totalMs) * 100)));
+      if (elapsedMs >= totalMs + 150) { resolve(); return; }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  });
+  recorder.stop();
+  await stopped;
+
+  return { blob: new Blob(chunks, { type: mimeType }), ext: mimeType.includes("mp4") ? "mp4" : "webm", w: g.W, h: g.H };
+}
+
 /* ================= Teilen (Design-Link) =================
    Kodiert den kompletten Design-Zustand (Format, Modus, Flächen,
    Animations-Parameter) direkt ins URL-Hash — kein Server, keine
@@ -2221,6 +2405,7 @@ function loadStateFromHash() {
 const btnCopyEl = document.getElementById("btnCopy");
 const btnDownloadEl = document.getElementById("btnDownload");
 const btnLottieEl = document.getElementById("btnLottie");
+const btnVideoEl = document.getElementById("btnVideo");
 const btnCopyLinkEl = document.getElementById("btnCopyLink");
 
 btnCopyLinkEl.addEventListener("click", async () => {
@@ -2287,6 +2472,29 @@ btnLottieEl.addEventListener("click", async () => {
   } finally {
     btnLottieEl.textContent = prevLabel;
     btnLottieEl.disabled = !compositionComplete();
+  }
+});
+
+btnVideoEl.addEventListener("click", async () => {
+  if (!compositionComplete()) {
+    toast("Layout unvollständig — erst 3 Verlauf- + 1 Pixel-Fläche anlegen");
+    return;
+  }
+  btnVideoEl.disabled = true;
+  const prevLabel = btnVideoEl.textContent;
+  try {
+    const { blob, ext, w, h } = await exportVideo((pct) => { btnVideoEl.textContent = `Rendert … ${pct}%`; });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `greenfusion-${w}x${h}-${Date.now()}.${ext}`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("Video exportiert");
+  } catch (e) {
+    toast(e && e.message ? e.message : "Video-Export fehlgeschlagen");
+  } finally {
+    btnVideoEl.textContent = prevLabel;
+    btnVideoEl.disabled = !compositionComplete();
   }
 });
 
