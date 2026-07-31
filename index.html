@@ -200,6 +200,18 @@
     align-items: center;
     justify-content: center;
   }
+  /* Secondary-Themes exportieren transparent — Schachbrett macht das im
+     Editor sichtbar, ist aber nur UI-Hinweis und nie Teil des Exports. */
+  #stage.checkerboard {
+    background-image:
+      linear-gradient(45deg, #808080 25%, transparent 25%),
+      linear-gradient(-45deg, #808080 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #808080 75%),
+      linear-gradient(-45deg, transparent 75%, #808080 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    background-color: #bfbfbf;
+  }
   #stage svg {
     max-width: 100%;
     max-height: calc(100vh - 64px);
@@ -290,6 +302,10 @@
       </span>
     </div>
     <div class="row">
+      <span class="rlabel">Theme</span>
+      <select id="themeSelect"></select>
+    </div>
+    <div class="row" id="modusRow">
       <span class="rlabel">Modus</span>
       <div class="seg mini">
         <button id="modeDark">Dark</button>
@@ -305,7 +321,7 @@
     <div class="tiles">
       <button id="typeGradient" class="tile">
         <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="15" height="15" rx="2.5"/><path d="M5.5 5.5 L12.5 12.5 M12.5 12.5 L12.5 8.2 M12.5 12.5 L8.2 12.5"/></svg>
-        Verlauf
+        <span id="typeGradientLabel">Verlauf</span>
       </button>
       <button id="typeDots" class="tile">
         <svg viewBox="0 0 18 18" fill="currentColor"><circle cx="4" cy="4" r="1.3"/><circle cx="9" cy="4" r="1.3"/><circle cx="14" cy="4" r="1.3"/><circle cx="4" cy="9" r="1.3"/><circle cx="9" cy="9" r="1.3"/><circle cx="14" cy="9" r="1.3"/><circle cx="4" cy="14" r="1.3"/><circle cx="9" cy="14" r="1.3"/><circle cx="14" cy="14" r="1.3"/></svg>
@@ -318,7 +334,7 @@
     </div>
     <div class="compcheck" id="compCheck">
       <div class="compcheck-row">
-        <span class="compcheck-label">Verlauf</span>
+        <span class="compcheck-label" id="compLabelGradient">Verlauf</span>
         <span class="cboxes" id="compBoxesGradient"><i class="cbox"></i><i class="cbox"></i><i class="cbox"></i></span>
         <span class="compcheck-count" id="compCountGradient">0/3</span>
       </div>
@@ -369,7 +385,7 @@
       <span class="disclosure-chevron">▸</span> Animation (BETA)
     </button>
     <div id="animBody" class="hidden">
-      <div class="hint" id="animEmpty" style="margin-bottom:10px">Mind. eine Verlauf-/Pixel-/Weiß-/Bild-Fläche anlegen, um die Sequenz abzuspielen.</div>
+      <div class="hint" id="animEmpty" style="margin-bottom:10px">Mind. eine Verlauf-/Pixel-/Bild-Fläche anlegen, um die Sequenz abzuspielen.</div>
       <div class="animsteps" id="animSteps"></div>
       <svg id="curveSvg" viewBox="0 0 180 180" width="100%" height="150"></svg>
       <div class="row">
@@ -387,7 +403,7 @@
   <div class="spacer"></div>
 
   <div style="border-top:1px solid var(--ui-border);padding-top:14px">
-    <label class="hint" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:10px">
+    <label class="hint" id="exportBgRow" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:10px">
       <input type="checkbox" id="exportBg" checked style="accent-color:var(--lead)">
       Hintergrund mitexportieren
     </label>
@@ -459,6 +475,31 @@ const WHITE_HEX = "#F4F4F2";        // Plain-White-Fläche
 const PLACEHOLDER_FILL = "#33403C"; // leerer Bildplatzhalter
 const DOTTILE = { color: "#0A9B8F", spacing: 7.5, r: 1.5 }; // Pixel-Kachel: feines Dot-Raster
 const TYPE_LABELS = { gradient: "Leadgrün-Verlauf", image: "Bild", white: "Weiß", dots: "Pixel-Raster" };
+
+// Secondary-Themes: flache Farbflächen ohne Verlauf, nur für Diagramme/
+// Datenviz gedacht (nicht fürs Branding) — daher kein Hintergrund/Punkteraster,
+// stattdessen Export auf echtem Transparent. Gleiche Komposition-Regeln wie
+// Cybermint (3 Hauptflächen + 1 Pixel-Fläche), nur die Füllung ist flach statt
+// Verlauf. Je 3 Helligkeitsstufen (hell→dunkel, größte Fläche = Stufe 0) +
+// eine Akzentfarbe für die Pixel-Kachel, analog zu DOTTILE.color bei Cybermint.
+const THEMES = {
+  cybermint: { label: "Cybermint", primary: true, gradient: true },
+  yellow:    { label: "Gelb (Flat)",   primary: false, gradient: false, shades: ["#F2E205", "#F5EA63", "#F9F5B0"], dot: "#8C7D00" },
+  coral:     { label: "Koralle (Flat)", primary: false, gradient: false, shades: ["#F2734F", "#F59D82", "#F9CDBB"], dot: "#8C371A" },
+  blue:      { label: "Blau (Flat)",   primary: false, gradient: false, shades: ["#5AA9F2", "#8FC5F5", "#CBE4F9"], dot: "#1F5C8C" },
+  orange:    { label: "Orange (Flat)", primary: false, gradient: false, shades: ["#F2A93F", "#F5C57E", "#F9E3BB"], dot: "#8C5A00" }
+};
+const THEME_ORDER = ["cybermint", "yellow", "coral", "blue", "orange"];
+
+// Anzeigename für einen Flächentyp — bei "gradient" abhängig vom aktiven
+// Theme (Cybermint-Verlauf vs. flache Secondary-Theme-Fläche).
+function typeLabel(type) {
+  if (type === "gradient") {
+    const th = THEMES[state.theme];
+    return th.primary ? TYPE_LABELS.gradient : `${th.label}-Fläche`;
+  }
+  return TYPE_LABELS[type] || type;
+}
 
 const BG = "#003028";
 const DOT_R = 2;            // Basisraster-Punkt
@@ -608,7 +649,8 @@ const state = {
   nextTypeManual: false, // true = per Typ-Kachel bewusst für den nächsten Zug gewählt, übersteuert die Auto-Sequenz einmalig
   surfaces: [],   // { x, y, w, h, type, img } — img: { src, natW, natH, scale, ox, oy }
   selection: [],  // Indizes der ausgewählten Flächen (Shift+Klick = Mehrfachauswahl)
-  mode: "dark"   // 'dark' | 'light'
+  mode: "dark",  // 'dark' | 'light'
+  theme: "cybermint" // Schlüssel aus THEMES — Cybermint ist primär, Rest sind flache Secondary-Themes
 };
 
 // sel() liefert die Fläche nur bei Einzelauswahl (für Resize, Bild-Controls etc.)
@@ -714,14 +756,17 @@ function renderSVG(opts) {
   const all = preview ? state.surfaces.concat([preview]) : state.surfaces;
   const bleeds = all.map(s => bleedRect(s, g)); // Randflächen bis zur Dokumentkante (nur Zeichnung)
 
-  const withBg = !(opts && opts.noBg);
+  const theme = THEMES[state.theme];
+  // Secondary-Themes sind reine Diagramm-Flächen ohne Branding-Hintergrund —
+  // export immer transparent, unabhängig vom "Hintergrund mitexportieren"-Haken.
+  const withBg = theme.primary && !(opts && opts.noBg);
   const shades = shadeMap(all); // Helligkeit aus Größen-Ranking
 
-  // Defs: Verläufe (fest ↘) + Clip-Masken für Bildflächen
+  // Defs: Verläufe (fest ↘, nur Cybermint) + Clip-Masken für Bildflächen
   let defs = "";
   let hasImage = false;
   all.forEach((s, idx) => {
-    if (s.type === "gradient") {
+    if (s.type === "gradient" && theme.gradient) {
       const shade = shades[idx] || 0;
       const st = shade === 0 ? SHADE0_STOPS
                : shade === 1 ? SHADE1_STOPS
@@ -757,23 +802,27 @@ function renderSVG(opts) {
     out += `</g>`;
   }
 
-  // Basisraster — im Export vollständig, außer unter Pixel-Kacheln (dort
-  // würde das Grid durchscheinen). In der Editor-Ansicht werden Punkte
-  // auf/unter allen Flächen ausgeblendet (Konvention A).
-  const fullDots = opts && opts.fullDots;
-  const modeDef = MODES[state.mode];
-  const dotBlockers = fullDots ? all.filter(s => s.type === "dots") : all;
-  out += `<g id="punktraster" fill="${modeDef.dot}" opacity="${modeDef.dotOpacity}">`;
-  for (let j = 0; j <= g.rows; j++) {
-    for (let i = 0; i <= g.cols; i++) {
-      const x = g.ox + i * g.m;
-      const y = g.oy + j * g.m;
-      if (!dotHidden(x, y, dotBlockers)) {
-        out += `<circle cx="${x}" cy="${y}" r="${DOT_R}"/>`;
+  // Basisraster — nur bei Cybermint (Teil des Hero-Brandings). Secondary-
+  // Themes sind reine Diagramm-Flächen ohne Hintergrund-Dekoration.
+  if (theme.primary) {
+    // Im Export vollständig, außer unter Pixel-Kacheln (dort würde das Grid
+    // durchscheinen). In der Editor-Ansicht werden Punkte auf/unter allen
+    // Flächen ausgeblendet (Konvention A).
+    const fullDots = opts && opts.fullDots;
+    const modeDef = MODES[state.mode];
+    const dotBlockers = fullDots ? all.filter(s => s.type === "dots") : all;
+    out += `<g id="punktraster" fill="${modeDef.dot}" opacity="${modeDef.dotOpacity}">`;
+    for (let j = 0; j <= g.rows; j++) {
+      for (let i = 0; i <= g.cols; i++) {
+        const x = g.ox + i * g.m;
+        const y = g.oy + j * g.m;
+        if (!dotHidden(x, y, dotBlockers)) {
+          out += `<circle cx="${x}" cy="${y}" r="${DOT_R}"/>`;
+        }
       }
     }
+    out += `</g>`;
   }
-  out += `</g>`;
 
   // Flächen (Zeichnungsreihenfolge = Z-Reihenfolge)
   out += `<g id="flaechen">`;
@@ -790,7 +839,7 @@ function renderSVG(opts) {
       out += `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="${WHITE_HEX}"${op}${animAttr}/>`;
     } else if (s.type === "dots") {
       // Pixel-Kachel: feines Dot-Raster, lokal zur (ggf. gebleedeten) Fläche verankert
-      out += `<g fill="${DOTTILE.color}"${op}${animAttr}>`;
+      out += `<g fill="${theme.primary ? DOTTILE.color : theme.dot}"${op}${animAttr}>`;
       const sp = DOTTILE.spacing;
       for (let y = b.y + sp / 2; y <= b.y + b.h - sp / 2 + 0.01; y += sp) {
         for (let x = b.x + sp / 2; x <= b.x + b.w - sp / 2 + 0.01; x += sp) {
@@ -813,7 +862,10 @@ function renderSVG(opts) {
                `</g>`;
       }
     } else {
-      out += `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="url(#verlauf-${idx})"${op}${animAttr}/>`;
+      // Cybermint: Verlauf-Fill über die Defs. Secondary-Themes: flache
+      // Farbfläche nach Helligkeits-Rang (Größen-Ranking wie beim Verlauf).
+      const fill = theme.gradient ? `url(#verlauf-${idx})` : (theme.shades[shades[idx] || 0] || theme.shades[theme.shades.length - 1]);
+      out += `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="${fill}"${op}${animAttr}/>`;
     }
   });
   out += `</g>`;
@@ -869,7 +921,7 @@ function updateSidebar() {
   if (s) {
     const shades = shadeMap(state.surfaces);
     const shadeSuffix = s.type === "gradient" ? SHADE_LABELS[shades[selIdx()] || 0] : "";
-    selInfo.textContent = `${Math.round(s.w / g.m)} × ${Math.round(s.h / g.m)} Module · ${TYPE_LABELS[s.type] || ""}${shadeSuffix}`;
+    selInfo.textContent = `${Math.round(s.w / g.m)} × ${Math.round(s.h / g.m)} Module · ${typeLabel(s.type)}${shadeSuffix}`;
   } else if (n > 1) {
     selInfo.textContent = `${n} Flächen ausgewählt`;
   }
@@ -1336,6 +1388,38 @@ Object.keys(typeBtns).forEach(k =>
   typeBtns[k].addEventListener("click", () => setType(k))
 );
 
+/* ---- Theme: Cybermint (primär, Verlauf) + flache Secondary-Themes ---- */
+const themeSelect = document.getElementById("themeSelect");
+const modusRowEl = document.getElementById("modusRow");
+const exportBgRowEl = document.getElementById("exportBgRow");
+const typeGradientLabelEl = document.getElementById("typeGradientLabel");
+const compLabelGradientEl = document.getElementById("compLabelGradient");
+
+THEME_ORDER.forEach(key => {
+  const th = THEMES[key];
+  const o = document.createElement("option");
+  o.value = key;
+  o.textContent = th.primary ? `${th.label} (Primär)` : th.label;
+  themeSelect.appendChild(o);
+});
+
+function setTheme(t) {
+  state.theme = THEMES[t] ? t : "cybermint";
+  themeSelect.value = state.theme;
+  const th = THEMES[state.theme];
+  // Modus (Dark/Light) und Hintergrund-Export gelten nur für Cybermint —
+  // Secondary-Themes haben keinen Hintergrund, sondern echtes Transparent.
+  modusRowEl.classList.toggle("hidden", !th.primary);
+  exportBgRowEl.classList.toggle("hidden", !th.primary);
+  const label = th.primary ? "Verlauf" : "Fläche";
+  typeGradientLabelEl.textContent = label;
+  compLabelGradientEl.textContent = label;
+  stage.classList.toggle("checkerboard", !th.primary);
+  render();
+}
+themeSelect.addEventListener("change", () => setTheme(themeSelect.value));
+themeSelect.value = state.theme; // Default (Cybermint) matcht bereits den HTML-Ausgangszustand, kein Render nötig
+
 /* ---- Modus: Dark / Light (bestimmt Hintergrundbild + Punktegrid) ---- */
 const modeBtns = {
   dark: document.getElementById("modeDark"),
@@ -1728,9 +1812,9 @@ function animStepLabel(idx) {
   if (s.type === "gradient") {
     const shades = shadeMap(state.surfaces);
     const label = SHADE_LABELS[shades[idx] || 0];
-    return label ? label.replace(" · ", "") : "Verlauf";
+    return label ? label.replace(" · ", "") : typeLabel(s.type);
   }
-  return TYPE_LABELS[s.type] || s.type;
+  return typeLabel(s.type);
 }
 
 // Randomizer- und Animation-Zone einklappbar, beide initial eingeklappt,
@@ -1920,6 +2004,7 @@ function buildShareState() {
     formatIndex: state.formatIndex,
     customSize: state.customSize,
     mode: state.mode,
+    theme: state.theme,
     // Bildflächen: nur Typ + Geometrie, kein img (siehe Kommentar oben)
     surfaces: state.surfaces.map(s => ({ x: s.x, y: s.y, w: s.w, h: s.h, type: s.type })),
     animCurves: state.animCurves,
@@ -1963,7 +2048,8 @@ function applyShareState(data) {
   }
   animDurationInput.value = state.animDuration;
   animStaggerInput.value = state.animStagger;
-  setMode(data.mode === "light" ? "light" : "dark"); // rendert bereits
+  setMode(data.mode === "light" ? "light" : "dark");
+  setTheme(data.theme); // fällt bei fehlendem/unbekanntem Theme auf Cybermint zurück, rendert bereits
 
   history = [JSON.stringify(state.surfaces)];
   hIndex = 0;
