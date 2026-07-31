@@ -102,14 +102,36 @@
   }
   select {
     width: 100%;
-    background: var(--ui-bg);
+    background-color: var(--ui-bg);
     color: var(--ui-text);
     border: 1px solid var(--ui-border);
     border-radius: 6px;
-    padding: 8px 10px;
+    padding: 8px 32px 8px 10px;
     font-size: 13px;
     outline: none;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238FA09A' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
   }
+  /* Prominenter als die übrigen Selects — sitzt direkt über den Flächentyp-
+     Buttons und ist die wichtigste Weiche (Cybermint vs. Secondary-Themes). */
+  .theme-select {
+    background-color: var(--ui-bg);
+    color: var(--ui-text);
+    border: 1.5px solid var(--lead);
+    border-radius: 8px;
+    padding: 10px 32px 10px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+    text-align-last: center;
+    cursor: pointer;
+    margin-bottom: 10px;
+  }
+  .theme-select:hover { background-color: var(--ui-panel); }
   .seg { display: flex; border: 1px solid var(--ui-border); border-radius: 6px; overflow: hidden; }
   .seg button {
     flex: 1;
@@ -204,13 +226,13 @@
      Editor sichtbar, ist aber nur UI-Hinweis und nie Teil des Exports. */
   #stage.checkerboard {
     background-image:
-      linear-gradient(45deg, #808080 25%, transparent 25%),
-      linear-gradient(-45deg, #808080 25%, transparent 25%),
-      linear-gradient(45deg, transparent 75%, #808080 75%),
-      linear-gradient(-45deg, transparent 75%, #808080 75%);
+      linear-gradient(45deg, #E4DECE 25%, transparent 25%),
+      linear-gradient(-45deg, #E4DECE 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #E4DECE 75%),
+      linear-gradient(-45deg, transparent 75%, #E4DECE 75%);
     background-size: 20px 20px;
     background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
-    background-color: #bfbfbf;
+    background-color: #F5F1E7;
   }
   #stage svg {
     max-width: 100%;
@@ -301,10 +323,6 @@
         <input type="number" id="customH" min="240" max="7680" step="10" class="numin" aria-label="Höhe in Pixeln">
       </span>
     </div>
-    <div class="row">
-      <span class="rlabel">Theme</span>
-      <select id="themeSelect"></select>
-    </div>
     <div class="row" id="modusRow">
       <span class="rlabel">Modus</span>
       <div class="seg mini">
@@ -318,6 +336,7 @@
 
   <div class="group">
     <label class="ztitle">Flächen anlegen</label>
+    <select id="themeSelect" class="theme-select"></select>
     <div class="tiles">
       <button id="typeGradient" class="tile">
         <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="1.5" width="15" height="15" rx="2.5"/><path d="M5.5 5.5 L12.5 12.5 M12.5 12.5 L12.5 8.2 M12.5 12.5 L8.2 12.5"/></svg>
@@ -483,13 +502,12 @@ const TYPE_LABELS = { gradient: "Leadgrün-Verlauf", image: "Bild", white: "Wei�
 // Verlauf. Je 3 Helligkeitsstufen (hell→dunkel, größte Fläche = Stufe 0) +
 // eine Akzentfarbe für die Pixel-Kachel, analog zu DOTTILE.color bei Cybermint.
 const THEMES = {
-  cybermint: { label: "Cybermint", primary: true, gradient: true },
-  yellow:    { label: "Gelb (Flat)",   primary: false, gradient: false, shades: ["#F2E205", "#F5EA63", "#F9F5B0"], dot: "#8C7D00" },
-  coral:     { label: "Koralle (Flat)", primary: false, gradient: false, shades: ["#F2734F", "#F59D82", "#F9CDBB"], dot: "#8C371A" },
-  blue:      { label: "Blau (Flat)",   primary: false, gradient: false, shades: ["#5AA9F2", "#8FC5F5", "#CBE4F9"], dot: "#1F5C8C" },
-  orange:    { label: "Orange (Flat)", primary: false, gradient: false, shades: ["#F2A93F", "#F5C57E", "#F9E3BB"], dot: "#8C5A00" }
+  cybermint: { label: "Primary Mint",     primary: true,  gradient: true },
+  orange:    { label: "Secondary Orange", primary: false, gradient: false, shades: ["#F2A93F", "#F5C57E", "#F9E3BB"], dot: "#8C5A00" },
+  blue:      { label: "Secondary Blau",   primary: false, gradient: false, shades: ["#5AA9F2", "#8FC5F5", "#CBE4F9"], dot: "#1F5C8C" },
+  coral:     { label: "Secondary Koralle", primary: false, gradient: false, shades: ["#F2734F", "#F59D82", "#F9CDBB"], dot: "#8C371A" }
 };
-const THEME_ORDER = ["cybermint", "yellow", "coral", "blue", "orange"];
+const THEME_ORDER = ["cybermint", "orange", "blue", "coral"];
 
 // Anzeigename für einen Flächentyp — bei "gradient" abhängig vom aktiven
 // Theme (Cybermint-Verlauf vs. flache Secondary-Theme-Fläche).
@@ -1399,7 +1417,7 @@ THEME_ORDER.forEach(key => {
   const th = THEMES[key];
   const o = document.createElement("option");
   o.value = key;
-  o.textContent = th.primary ? `${th.label} (Primär)` : th.label;
+  o.textContent = th.label;
   themeSelect.appendChild(o);
 });
 
