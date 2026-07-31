@@ -226,13 +226,13 @@
      Editor sichtbar, ist aber nur UI-Hinweis und nie Teil des Exports. */
   #stage.checkerboard {
     background-image:
-      linear-gradient(45deg, #E4DECE 25%, transparent 25%),
-      linear-gradient(-45deg, #E4DECE 25%, transparent 25%),
-      linear-gradient(45deg, transparent 75%, #E4DECE 75%),
-      linear-gradient(-45deg, transparent 75%, #E4DECE 75%);
+      linear-gradient(45deg, #E2E2E2 25%, transparent 25%),
+      linear-gradient(-45deg, #E2E2E2 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #E2E2E2 75%),
+      linear-gradient(-45deg, transparent 75%, #E2E2E2 75%);
     background-size: 20px 20px;
     background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
-    background-color: #F5F1E7;
+    background-color: #F7F7F7;
   }
   #stage svg {
     max-width: 100%;
@@ -2107,6 +2107,16 @@ btnCopyLinkEl.addEventListener("click", async () => {
   }
 });
 
+function downloadSvg() {
+  const f = formatSize();
+  const blob = new Blob([exportString()], { type: "image/svg+xml" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `greenfusion-${f.w}x${f.h}-${Date.now()}.svg`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 btnCopyEl.addEventListener("click", async () => {
   if (!compositionComplete()) {
     toast("Layout unvollständig — erst 3 Verlauf- + 1 Pixel-Fläche anlegen");
@@ -2116,7 +2126,11 @@ btnCopyEl.addEventListener("click", async () => {
     await navigator.clipboard.writeText(exportString());
     toast("SVG kopiert — in Figma einfach ⌘V");
   } catch (e) {
-    toast("Kopieren fehlgeschlagen — bitte Download nutzen");
+    // Clipboard-Zugriff kann browserseitig verweigert werden (Fokus,
+    // Berechtigungen, sehr große Layouts) — Download greift immer, daher
+    // hier automatisch auslösen statt nur drauf hinzuweisen.
+    downloadSvg();
+    toast("Kopieren nicht möglich — SVG wurde heruntergeladen");
   }
 });
 
@@ -2125,13 +2139,7 @@ btnDownloadEl.addEventListener("click", () => {
     toast("Layout unvollständig — erst 3 Verlauf- + 1 Pixel-Fläche anlegen");
     return;
   }
-  const f = formatSize();
-  const blob = new Blob([exportString()], { type: "image/svg+xml" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `greenfusion-${f.w}x${f.h}-${Date.now()}.svg`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  downloadSvg();
 });
 
 btnExportPngEl.addEventListener("click", async () => {
