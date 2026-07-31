@@ -503,11 +503,12 @@ const TYPE_LABELS = { gradient: "Leadgrün-Verlauf", image: "Bild", white: "Wei�
 // eine Akzentfarbe für die Pixel-Kachel, analog zu DOTTILE.color bei Cybermint.
 const THEMES = {
   cybermint: { label: "Primary Mint",     primary: true,  gradient: true },
+  yellow:    { label: "Secondary Gelb",   primary: false, gradient: false, shades: ["#F2E205", "#D9C700", "#8C7A00"], dot: "#665C00" },
   orange:    { label: "Secondary Orange", primary: false, gradient: false, shades: ["#F2A93F", "#D98C1F", "#8C5710"], dot: "#8C5A00" },
   blue:      { label: "Secondary Blau",   primary: false, gradient: false, shades: ["#5AA9F2", "#3D82C4", "#1D4A73"], dot: "#1F5C8C" },
   coral:     { label: "Secondary Koralle", primary: false, gradient: false, shades: ["#F2734F", "#D85A38", "#8C3018"], dot: "#8C371A" }
 };
-const THEME_ORDER = ["cybermint", "orange", "blue", "coral"];
+const THEME_ORDER = ["cybermint", "yellow", "orange", "blue", "coral"];
 
 // Anzeigename für einen Flächentyp — bei "gradient" abhängig vom aktiven
 // Theme (Cybermint-Verlauf vs. flache Secondary-Theme-Fläche).
