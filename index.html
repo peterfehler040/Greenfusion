@@ -421,12 +421,20 @@
   <div class="spacer"></div>
 
   <div style="border-top:1px solid var(--ui-border);padding-top:14px">
+    <div class="seg" id="exportScopeRow" style="margin-bottom:10px">
+      <button id="scopeComp" class="active">Komposition</button>
+      <button id="scopeBg">Nur Hintergrund</button>
+    </div>
     <label class="hint" id="exportBgRow" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:10px">
       <input type="checkbox" id="exportBg" checked style="accent-color:var(--lead)">
       Hintergrund mitexportieren
     </label>
+    <div class="hint hidden" id="bgScopeHint" style="margin-bottom:10px">
+      Exportiert nur die Hintergrund-Ebene (<span id="bgScopeMode">Dark</span>) mit Noise und vollständigem Punktraster — ohne Flächen, unabhängig vom Layout.
+    </div>
     <button class="btn primary" id="btnCopy" style="text-align:center">Layout kopieren (SVG)</button>
     <button class="btn" id="btnExportPng" style="text-align:center;margin-top:8px">Exportieren (PNG)</button>
+    <button class="btn hidden" id="btnBgBoth" style="text-align:center;margin-top:8px">Beide Modi (PNG)</button>
     <button class="btn" id="btnCopyLink" style="text-align:center;margin-top:8px">🔗 Design-Link</button>
     <div class="outrow">
       <span style="display:flex;gap:10px;align-items:center">
@@ -671,6 +679,12 @@ const state = {
   theme: "cybermint" // Schlüssel aus THEMES — Cybermint ist primär, Rest sind flache Secondary-Themes
 };
 
+// Export-Scope: 'composition' = fertiges Layout, 'background' = nur die
+// Hintergrund-Ebene (Mode-Farbe + Noise + volles Punktraster). Bewusst kein
+// Teil von state: es ist eine Export-Einstellung, kein Design-Zustand — gehört
+// also weder in die Undo-History noch in den Design-Link.
+let exportScope = "composition";
+
 // sel() liefert die Fläche nur bei Einzelauswahl (für Resize, Bild-Controls etc.)
 const sel = () => (state.selection.length === 1 ? state.surfaces[state.selection[0]] : null);
 const selIdx = () => (state.selection.length === 1 ? state.selection[0] : -1);
@@ -768,7 +782,12 @@ function dotHidden(x, y, surfaces) {
 }
 
 function renderSVG(opts) {
-  const chrome = opts && opts.chrome;
+  // bgOnly = Export "Nur Hintergrund": Flächen entfallen komplett.
+  // bgDim  = Editor-Vorschau desselben Scopes: Flächen bleiben schwach
+  //          sichtbar, damit erkennbar ist, dass das Layout erhalten bleibt.
+  const bgOnly = !!(opts && opts.bgOnly);
+  const bgDim = !!(opts && opts.bgDim);
+  const chrome = (opts && opts.chrome) && !bgDim; // im Hintergrund-Scope keine Auswahl-Marker
   const preview = opts && opts.preview; // temporäre Fläche beim Zeichnen
   const g = geometry();
   const all = preview ? state.surfaces.concat([preview]) : state.surfaces;
@@ -777,13 +796,14 @@ function renderSVG(opts) {
   const theme = THEMES[state.theme];
   // Secondary-Themes sind reine Diagramm-Flächen ohne Branding-Hintergrund —
   // export immer transparent, unabhängig vom "Hintergrund mitexportieren"-Haken.
-  const withBg = theme.primary && !(opts && opts.noBg);
+  // Im Hintergrund-Scope ist der Hintergrund der Inhalt, der Haken also ohne Wirkung.
+  const withBg = theme.primary && (bgOnly || !(opts && opts.noBg));
   const shades = shadeMap(all); // Helligkeit aus Größen-Ranking
 
   // Defs: Verläufe (fest ↘, nur Cybermint) + Clip-Masken für Bildflächen
   let defs = "";
   let hasImage = false;
-  all.forEach((s, idx) => {
+  (bgOnly ? [] : all).forEach((s, idx) => {
     if (s.type === "gradient" && theme.gradient) {
       const shade = shades[idx] || 0;
       const st = shade === 0 ? SHADE0_STOPS
@@ -828,7 +848,9 @@ function renderSVG(opts) {
     // Flächen ausgeblendet (Konvention A).
     const fullDots = opts && opts.fullDots;
     const modeDef = MODES[state.mode];
-    const dotBlockers = fullDots ? all.filter(s => s.type === "dots") : all;
+    // Hintergrund-Scope: nichts blockt, das Raster läuft durch — genau das ist
+    // in der Vorschau der sichtbare Unterschied zum Kompositions-Export.
+    const dotBlockers = (bgOnly || bgDim) ? [] : (fullDots ? all.filter(s => s.type === "dots") : all);
     out += `<g id="punktraster" fill="${modeDef.dot}" opacity="${modeDef.dotOpacity}">`;
     for (let j = 0; j <= g.rows; j++) {
       for (let i = 0; i <= g.cols; i++) {
@@ -843,8 +865,8 @@ function renderSVG(opts) {
   }
 
   // Flächen (Zeichnungsreihenfolge = Z-Reihenfolge)
-  out += `<g id="flaechen">`;
-  all.forEach((s, idx) => {
+  out += bgOnly ? "" : `<g id="flaechen"${bgDim ? ' opacity="0.1"' : ""}>`;
+  (bgOnly ? [] : all).forEach((s, idx) => {
     const isPreview = preview && idx === all.length - 1;
     const op = isPreview ? (s.invalid ? ' opacity="0.25"' : ' opacity="0.75"') : "";
     // Markiert jede echte Fläche mit ihrem State-Index — nur in der Editor-
@@ -886,7 +908,7 @@ function renderSVG(opts) {
       out += `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="${fill}"${op}${animAttr}/>`;
     }
   });
-  out += `</g>`;
+  out += bgOnly ? "" : `</g>`;
 
   // Auswahl-Chrome (nie im Export); Resize-Handles nur bei Einzelauswahl
   if (chrome && state.selection.length) {
@@ -920,7 +942,7 @@ let drag = null; // { mode: 'draw'|'move'|'resize', ... }
 let renderQueued = false;
 
 function render(preview) {
-  stage.innerHTML = renderSVG({ chrome: true, preview: preview || null });
+  stage.innerHTML = renderSVG({ chrome: true, preview: preview || null, bgDim: exportScope === "background" });
   updateSidebar();
 }
 function scheduleRender(preview) {
@@ -1428,12 +1450,16 @@ function setTheme(t) {
   // Modus (Dark/Light) und Hintergrund-Export gelten nur für Cybermint —
   // Secondary-Themes haben keinen Hintergrund, sondern echtes Transparent.
   modusRowEl.classList.toggle("hidden", !th.primary);
-  exportBgRowEl.classList.toggle("hidden", !th.primary);
+  exportBgRowEl.classList.toggle("hidden", !th.primary || bgScopeActive());
+  // Secondary-Themes haben keinen Hintergrund — der Scope-Umschalter entfällt
+  // dort und ein aktiver Hintergrund-Scope fällt auf die Komposition zurück.
+  exportScopeRowEl.classList.toggle("hidden", !th.primary);
   const label = th.primary ? "Verlauf" : "Fläche";
   typeGradientLabelEl.textContent = label;
   compLabelGradientEl.textContent = label;
   stage.classList.toggle("checkerboard", !th.primary);
-  render();
+  if (!th.primary && bgScopeActive()) setExportScope("composition"); // rendert selbst
+  else render();
 }
 themeSelect.addEventListener("change", () => setTheme(themeSelect.value));
 themeSelect.value = state.theme; // Default (Cybermint) matcht bereits den HTML-Ausgangszustand, kein Render nötig
@@ -1447,6 +1473,7 @@ function setMode(m) {
   state.mode = m;
   modeBtns.dark.classList.toggle("active", m === "dark");
   modeBtns.light.classList.toggle("active", m === "light");
+  syncBgScopeMode(); // Hintergrund-Export folgt dem Modus-Umschalter
   render();
 }
 modeBtns.dark.addEventListener("click", () => setMode("dark"));
@@ -1780,15 +1807,21 @@ function updateCompCheck() {
   });
   const exportReady = complete && docked;
   document.getElementById("compCheck").classList.toggle("done", exportReady);
-  document.getElementById("compStatus").textContent = exportReady
-    ? "Layout vollständig — export-bereit"
-    : !complete
-      ? "Layout unvollständig — Export gesperrt"
-      : "Flächen andocken für Export";
+  // Im Hintergrund-Scope wäre "Export gesperrt" ein Widerspruch zu den aktiven
+  // Buttons — die Statuszeile sagt dort, warum die Sperre nicht greift.
+  const bg = bgScopeActive();
+  document.getElementById("compStatus").textContent = bg
+    ? "Nur Hintergrund — immer exportierbar"
+    : exportReady
+      ? "Layout vollständig — export-bereit"
+      : !complete
+        ? "Layout unvollständig — Export gesperrt"
+        : "Flächen andocken für Export";
 
-  btnCopyEl.disabled = !exportReady;
-  btnDownloadEl.disabled = !exportReady;
-  btnExportPngEl.disabled = !exportReady;
+  const locked = !bg && !exportReady;
+  btnCopyEl.disabled = locked;
+  btnDownloadEl.disabled = locked;
+  btnExportPngEl.disabled = locked;
 }
 
 // Animations-Reihenfolge: Verlauf sortiert nach Helligkeits-Rang (hell
@@ -1976,6 +2009,59 @@ function playAnimation() {
 }
 btnPlayAnim.addEventListener("click", playAnimation);
 
+/* ================= Export-Scope =================
+   Umschalter "Komposition / Nur Hintergrund" über den Export-Buttons. Die
+   Buttons bleiben dieselben und beziehen sich auf den gewählten Scope —
+   statt das Panel mit einem zweiten Button-Satz zu verdoppeln.
+
+   Im Hintergrund-Scope gilt die Kompositions-Sperre (3 Verlauf + 1 Pixel,
+   angedockt) nicht: ein Hintergrund ist unabhängig vom Layout und muss auch
+   auf leerem Artboard exportierbar sein.
+*/
+
+const scopeBtns = {
+  composition: document.getElementById("scopeComp"),
+  background: document.getElementById("scopeBg")
+};
+const exportScopeRowEl = document.getElementById("exportScopeRow");
+const bgScopeHintEl = document.getElementById("bgScopeHint");
+const bgScopeModeEl = document.getElementById("bgScopeMode");
+const btnBgBothEl = document.getElementById("btnBgBoth");
+
+function bgScopeActive() {
+  return exportScope === "background";
+}
+
+function setExportScope(s) {
+  exportScope = s === "background" ? "background" : "composition";
+  const bg = bgScopeActive();
+  scopeBtns.composition.classList.toggle("active", !bg);
+  scopeBtns.background.classList.toggle("active", bg);
+  // "Hintergrund mitexportieren" ist im Hintergrund-Scope implizit,
+  // der Design-Link hat dort keinen Zustand zum Teilen.
+  exportBgRowEl.classList.toggle("hidden", bg || !THEMES[state.theme].primary);
+  bgScopeHintEl.classList.toggle("hidden", !bg);
+  btnCopyLinkEl.classList.toggle("hidden", bg);
+  btnBgBothEl.classList.toggle("hidden", !bg);
+  // PNG ist beim Hintergrund das übliche Zielformat (das SVG schleppt das
+  // Noise-JPEG als Base64 mit), deshalb dort der hervorgehobene Button.
+  btnCopyEl.textContent = bg ? "Hintergrund kopieren (SVG)" : "Layout kopieren (SVG)";
+  btnCopyEl.classList.toggle("primary", !bg);
+  btnExportPngEl.textContent = bg ? "Hintergrund exportieren (PNG)" : "Exportieren (PNG)";
+  btnExportPngEl.classList.toggle("primary", bg);
+  syncBgScopeMode();
+  render();
+}
+
+// Hinweistext spiegelt den aktiven Modus — der Export folgt bewusst dem
+// Dark/Light-Umschalter, statt eine zweite Modus-Auswahl einzuführen.
+function syncBgScopeMode() {
+  bgScopeModeEl.textContent = state.mode === "light" ? "Light" : "Dark";
+}
+
+scopeBtns.composition.addEventListener("click", () => setExportScope("composition"));
+scopeBtns.background.addEventListener("click", () => setExportScope("background"));
+
 /* ================= Export ================= */
 
 function toast(msg) {
@@ -1986,8 +2072,64 @@ function toast(msg) {
 }
 
 function exportString() {
+  if (bgScopeActive()) return renderSVG({ chrome: false, bgOnly: true });
   const noBg = !document.getElementById("exportBg").checked;
   return renderSVG({ chrome: false, noBg, fullDots: true });
+}
+
+// Dateiname: Hintergründe müssen im Download-Ordner auf einen Blick von
+// Layout-Exporten unterscheidbar sein — inkl. Modus, da es zwei Varianten gibt.
+function exportBaseName() {
+  const f = formatSize();
+  return bgScopeActive()
+    ? `greenfusion-bg-${state.mode}-${f.w}x${f.h}-${Date.now()}`
+    : `greenfusion-${f.w}x${f.h}-${Date.now()}`;
+}
+
+// Rendert eine Funktion unter einem anderen Modus (für "Beide Modi"), ohne
+// den sichtbaren Zustand zu verändern — renderSVG() liest state.mode direkt.
+function withMode(m, fn) {
+  const prev = state.mode;
+  state.mode = m;
+  try { return fn(); } finally { state.mode = prev; }
+}
+
+// Sperre gilt nur für den Kompositions-Export; Hintergründe sind immer frei.
+function exportGuard() {
+  if (bgScopeActive()) return true;
+  if (!compositionComplete()) {
+    toast("Layout unvollständig — erst 3 Verlauf- + 1 Pixel-Fläche anlegen");
+    return false;
+  }
+  return true;
+}
+
+function triggerDownload(blob, filename) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// SVG-String → PNG-Blob über ein Offscreen-Canvas in Dokumentgröße.
+async function svgToPngBlob(svg, w, h) {
+  const svgUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+  const img = new Image();
+  try {
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = () => reject(new Error("SVG konnte nicht gerendert werden"));
+      img.src = svgUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+  return await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
 }
 
 /* ================= Teilen (Design-Link) =================
@@ -2108,20 +2250,12 @@ btnCopyLinkEl.addEventListener("click", async () => {
 });
 
 function downloadSvg() {
-  const f = formatSize();
-  const blob = new Blob([exportString()], { type: "image/svg+xml" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `greenfusion-${f.w}x${f.h}-${Date.now()}.svg`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  const name = exportBaseName();
+  triggerDownload(new Blob([exportString()], { type: "image/svg+xml" }), `${name}.svg`);
 }
 
 btnCopyEl.addEventListener("click", async () => {
-  if (!compositionComplete()) {
-    toast("Layout unvollständig — erst 3 Verlauf- + 1 Pixel-Fläche anlegen");
-    return;
-  }
+  if (!exportGuard()) return;
   try {
     await navigator.clipboard.writeText(exportString());
     toast("SVG kopiert — in Figma einfach ⌘V");
@@ -2135,47 +2269,46 @@ btnCopyEl.addEventListener("click", async () => {
 });
 
 btnDownloadEl.addEventListener("click", () => {
-  if (!compositionComplete()) {
-    toast("Layout unvollständig — erst 3 Verlauf- + 1 Pixel-Fläche anlegen");
-    return;
-  }
+  if (!exportGuard()) return;
   downloadSvg();
 });
 
 btnExportPngEl.addEventListener("click", async () => {
-  if (!compositionComplete()) {
-    toast("Layout unvollständig — erst 3 Verlauf- + 1 Pixel-Fläche anlegen");
-    return;
-  }
+  if (!exportGuard()) return;
   btnExportPngEl.disabled = true;
   const prevLabel = btnExportPngEl.textContent;
   btnExportPngEl.textContent = "Rendert …";
   try {
     const f = formatSize();
-    const svgUrl = URL.createObjectURL(new Blob([exportString()], { type: "image/svg+xml" }));
-    const img = new Image();
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = () => reject(new Error("SVG konnte nicht gerendert werden"));
-      img.src = svgUrl;
-    });
-    URL.revokeObjectURL(svgUrl);
-    const canvas = document.createElement("canvas");
-    canvas.width = f.w;
-    canvas.height = f.h;
-    canvas.getContext("2d").drawImage(img, 0, 0, f.w, f.h);
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `greenfusion-${f.w}x${f.h}-${Date.now()}.png`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast("PNG exportiert");
+    const blob = await svgToPngBlob(exportString(), f.w, f.h);
+    triggerDownload(blob, `${exportBaseName()}.png`);
+    toast(bgScopeActive() ? "Hintergrund exportiert" : "PNG exportiert");
   } catch (e) {
     toast(e && e.message ? e.message : "PNG-Export fehlgeschlagen");
   } finally {
     btnExportPngEl.textContent = prevLabel;
-    btnExportPngEl.disabled = !compositionComplete();
+    updateCompCheck();
+  }
+});
+
+// Beide Modi in einem Rutsch — der typische Fall beim Vorbereiten von Assets.
+btnBgBothEl.addEventListener("click", async () => {
+  btnBgBothEl.disabled = true;
+  const prevLabel = btnBgBothEl.textContent;
+  btnBgBothEl.textContent = "Rendert …";
+  try {
+    const f = formatSize();
+    for (const m of ["dark", "light"]) {
+      const svg = withMode(m, () => renderSVG({ chrome: false, bgOnly: true }));
+      const blob = await svgToPngBlob(svg, f.w, f.h);
+      triggerDownload(blob, `greenfusion-bg-${m}-${f.w}x${f.h}-${Date.now()}.png`);
+    }
+    toast("Dark + Light exportiert");
+  } catch (e) {
+    toast(e && e.message ? e.message : "PNG-Export fehlgeschlagen");
+  } finally {
+    btnBgBothEl.textContent = prevLabel;
+    btnBgBothEl.disabled = false;
   }
 });
 
