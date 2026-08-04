@@ -427,7 +427,7 @@
     <label class="ztitle">Export</label>
     <select id="exportScopeSelect" class="theme-select" aria-label="Was exportiert wird">
       <option value="full">Gesamte Komposition</option>
-      <option value="layout">Nur Layout-Elemente</option>
+      <option value="layout">Nur Flächen (transparent)</option>
       <option value="background">Nur Hintergrund</option>
     </select>
     <div class="hint" id="exportScopeHint" style="margin-bottom:10px"></div>
@@ -826,10 +826,7 @@ function renderSVG(opts) {
       defs += `<clipPath id="clip-${idx}"><rect x="${bi.x}" y="${bi.y}" width="${bi.w}" height="${bi.h}"/></clipPath>`;
     }
   });
-  if (withBg) {
-    hasImage = true;
-    defs += `<clipPath id="clip-bg"><rect width="${g.W}" height="${g.H}"/></clipPath>`;
-  }
+  if (withBg) hasImage = true; // Cover-Fit über preserveAspectRatio, kein Clip nötig
 
   let out = "";
   out += `<svg xmlns="http://www.w3.org/2000/svg"${hasImage ? ' xmlns:xlink="http://www.w3.org/1999/xlink"' : ""} width="${g.W}" height="${g.H}" viewBox="0 0 ${g.W} ${g.H}">`;
@@ -838,12 +835,13 @@ function renderSVG(opts) {
   if (withBg) {
     const md = MODES[state.mode];
     const bgIm = BG_IMAGES[state.mode];
+    // Cover-Fit über preserveAspectRatio="xMidYMid slice" statt über ein manuell
+    // gerechnetes Rechteck in einer clip-path-Gruppe: optisch identisch, aber ein
+    // schlichtes <image> ohne Clip-Referenz — genau die Konstruktion, die fremde
+    // SVG-Importer (Figma, Canva, Keynote) noch zuverlässig übernehmen.
     out += `<g id="hintergrund">`;
     out += `<rect width="${g.W}" height="${g.H}" fill="${md.bg}"/>`;
-    const k = Math.max(g.W / bgIm.natW, g.H / bgIm.natH);
-    const w = bgIm.natW * k, h = bgIm.natH * k;
-    const x = (g.W - w) / 2, y = (g.H - h) / 2;
-    out += `<g clip-path="url(#clip-bg)"><image x="${x}" y="${y}" width="${w}" height="${h}" preserveAspectRatio="none" href="${bgIm.src}" xlink:href="${bgIm.src}"/></g>`;
+    out += `<image x="0" y="0" width="${g.W}" height="${g.H}" preserveAspectRatio="xMidYMid slice" href="${bgIm.src}" xlink:href="${bgIm.src}"/>`;
     out += `</g>`;
   }
 
@@ -949,7 +947,17 @@ let drag = null; // { mode: 'draw'|'move'|'resize', ... }
 let renderQueued = false;
 
 function render(preview) {
-  stage.innerHTML = renderSVG({ chrome: true, preview: preview || null, bgDim: exportScope === "background" });
+  // Die Ansicht zeigt, was der gewählte Export liefert: "Nur Flächen" nimmt den
+  // Hintergrund raus und legt das Transparenz-Schachbrett unter — sonst wählt
+  // man die Option, sieht weiter den Hintergrund und wundert sich danach.
+  const noBg = exportScope === "layout";
+  stage.innerHTML = renderSVG({
+    chrome: true,
+    preview: preview || null,
+    bgDim: exportScope === "background",
+    noBg
+  });
+  stage.classList.toggle("checkerboard", noBg || !THEMES[state.theme].primary);
   updateSidebar();
 }
 function scheduleRender(preview) {
@@ -1459,8 +1467,8 @@ function setTheme(t) {
   const label = th.primary ? "Verlauf" : "Fläche";
   typeGradientLabelEl.textContent = label;
   compLabelGradientEl.textContent = label;
-  stage.classList.toggle("checkerboard", !th.primary);
-  // Ohne Hintergrund bleibt vom Export-Dropdown nur "Nur Layout-Elemente";
+  // Schachbrett setzt render() — es hängt auch am Export-Scope, nicht nur am Theme.
+  // Ohne Hintergrund bleibt vom Export-Dropdown nur "Nur Flächen (transparent)";
   // setExportScope() erzwingt das und rendert selbst.
   setExportScope(th.primary ? preferredExportScope : "layout");
 }
@@ -2058,7 +2066,7 @@ function syncExportScopeUI() {
     exportScope === "background"
       ? `Nur die Hintergrund-Ebene (${mode}) mit Noise und vollständigem Punktraster — ohne Flächen, unabhängig vom Layout.`
       : exportScope === "layout"
-        ? "Nur die Flächen, auf transparentem Hintergrund."
+        ? "Nur die Flächen — ohne Hintergrund und ohne Noise, auf echtem Transparent."
         : `Hintergrund (${mode}) und Flächen als fertiges Layout.`;
 }
 
