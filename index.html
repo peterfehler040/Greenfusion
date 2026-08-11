@@ -798,10 +798,13 @@ function renderSVG(opts) {
   const bleeds = all.map(s => bleedRect(s, g)); // Randflächen bis zur Dokumentkante (nur Zeichnung)
 
   const theme = THEMES[state.theme];
-  // Secondary-Themes sind reine Diagramm-Flächen ohne Branding-Hintergrund —
-  // export immer transparent, unabhängig vom "Hintergrund mitexportieren"-Haken.
-  // Im Hintergrund-Scope ist der Hintergrund der Inhalt, der Haken also ohne Wirkung.
-  const withBg = theme.primary && (bgOnly || !(opts && opts.noBg));
+  // surfacesOnly = Export "Nur Flächen": alles Hintergründige entfällt — die
+  // Hintergrund-Ebene UND das Basisraster. Das Raster gehört zur Bühne, nicht
+  // zum Layout; sonst lägen im transparenten Export unsichtbare weiße Punkte.
+  const surfacesOnly = !!(opts && opts.surfacesOnly);
+  // Secondary-Themes sind reine Diagramm-Flächen ohne Branding-Hintergrund und
+  // exportieren immer auf echtes Transparent.
+  const withBg = theme.primary && !surfacesOnly;
   const shades = shadeMap(all); // Helligkeit aus Größen-Ranking
 
   // Defs: Verläufe (fest ↘, nur Cybermint) + Clip-Masken für Bildflächen
@@ -843,8 +846,9 @@ function renderSVG(opts) {
   }
 
   // Basisraster — nur bei Cybermint (Teil des Hero-Brandings). Secondary-
-  // Themes sind reine Diagramm-Flächen ohne Hintergrund-Dekoration.
-  if (theme.primary) {
+  // Themes sind reine Diagramm-Flächen ohne Hintergrund-Dekoration, und bei
+  // "Nur Flächen" bleibt es ebenfalls draußen: es ist Bühne, nicht Layout.
+  if (theme.primary && !surfacesOnly) {
     // Im Export vollständig, außer unter Pixel-Kacheln (dort würde das Grid
     // durchscheinen). In der Editor-Ansicht werden Punkte auf/unter allen
     // Flächen ausgeblendet (Konvention A).
@@ -2058,7 +2062,7 @@ function syncExportScopeUI() {
     exportScope === "background"
       ? `Nur die Hintergrund-Ebene (${mode}) mit Noise und vollständigem Punktraster — ohne Flächen, unabhängig vom Layout.`
       : exportScope === "layout"
-        ? "Nur die Flächen — ohne Hintergrund und ohne Noise, auf echtem Transparent."
+        ? "Nur die Flächen — ohne Hintergrund, Noise und Punktraster, auf echtem Transparent."
         : `Hintergrund (${mode}) und Flächen als fertiges Layout.`;
 }
 
@@ -2075,7 +2079,7 @@ function toast(msg) {
 
 function exportString() {
   if (exportScope === "background") return renderSVG({ chrome: false, bgOnly: true });
-  return renderSVG({ chrome: false, noBg: exportScope === "layout", fullDots: true });
+  return renderSVG({ chrome: false, surfacesOnly: exportScope === "layout", fullDots: true });
 }
 
 // Dateiname: die drei Varianten müssen im Zielordner auf einen Blick
