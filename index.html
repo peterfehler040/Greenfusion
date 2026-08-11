@@ -535,7 +535,7 @@ const DOT_R = 2;            // Basisraster-Punkt
 // Artboard-Modi: Hintergrund-Default + Punktegrid-Farbe/-Opazität
 const MODES = {
   dark:  { bg: "#003028", dot: "#FFFFFF", dotOpacity: 0.18 },
-  light: { bg: "#FAFAF9", dot: "#0B2D28", dotOpacity: 0.08 }
+  light: { bg: "#FAFAF9", dot: "#0B2D28", dotOpacity: 0.12 }
 };
 
 // Fest eingebaute Hintergrundbilder pro Mode (Peters Texturen, 28.07.2026) —
@@ -790,11 +790,8 @@ function dotHidden(x, y, surfaces) {
 
 function renderSVG(opts) {
   // bgOnly = Export "Nur Hintergrund": Flächen entfallen komplett.
-  // bgDim  = Editor-Vorschau desselben Scopes: Flächen bleiben schwach
-  //          sichtbar, damit erkennbar ist, dass das Layout erhalten bleibt.
   const bgOnly = !!(opts && opts.bgOnly);
-  const bgDim = !!(opts && opts.bgDim);
-  const chrome = (opts && opts.chrome) && !bgDim; // im Hintergrund-Scope keine Auswahl-Marker
+  const chrome = opts && opts.chrome;
   const preview = opts && opts.preview; // temporäre Fläche beim Zeichnen
   const g = geometry();
   const all = preview ? state.surfaces.concat([preview]) : state.surfaces;
@@ -853,9 +850,8 @@ function renderSVG(opts) {
     // Flächen ausgeblendet (Konvention A).
     const fullDots = opts && opts.fullDots;
     const modeDef = MODES[state.mode];
-    // Hintergrund-Scope: nichts blockt, das Raster läuft durch — genau das ist
-    // in der Vorschau der sichtbare Unterschied zum Kompositions-Export.
-    const dotBlockers = (bgOnly || bgDim) ? [] : (fullDots ? all.filter(s => s.type === "dots") : all);
+    // Hintergrund-Export: nichts blockt, das Raster läuft durch.
+    const dotBlockers = bgOnly ? [] : (fullDots ? all.filter(s => s.type === "dots") : all);
     out += `<g id="punktraster" fill="${modeDef.dot}" opacity="${modeDef.dotOpacity}">`;
     for (let j = 0; j <= g.rows; j++) {
       for (let i = 0; i <= g.cols; i++) {
@@ -870,7 +866,7 @@ function renderSVG(opts) {
   }
 
   // Flächen (Zeichnungsreihenfolge = Z-Reihenfolge)
-  out += bgOnly ? "" : `<g id="flaechen"${bgDim ? ' opacity="0.1"' : ""}>`;
+  out += bgOnly ? "" : `<g id="flaechen">`;
   (bgOnly ? [] : all).forEach((s, idx) => {
     const isPreview = preview && idx === all.length - 1;
     const op = isPreview ? (s.invalid ? ' opacity="0.25"' : ' opacity="0.75"') : "";
@@ -946,18 +942,14 @@ const selInfo = document.getElementById("selInfo");
 let drag = null; // { mode: 'draw'|'move'|'resize', ... }
 let renderQueued = false;
 
+// Die Ansicht ist bewusst unabhängig vom Export-Scope: sie zeigt immer das
+// vollständige Layout. Eine Ansicht, die der Export-Auswahl folgt, macht das
+// Artboard nach dem Export zur Falle — man layoutet weiter, wundert sich über
+// abgeblendete Flächen und sucht die Ursache nicht in einem Dropdown im
+// Export-Panel (Peter, 04.08.2026). Was exportiert wird, sagt der Hinweistext.
 function render(preview) {
-  // Die Ansicht zeigt, was der gewählte Export liefert: "Nur Flächen" nimmt den
-  // Hintergrund raus und legt das Transparenz-Schachbrett unter — sonst wählt
-  // man die Option, sieht weiter den Hintergrund und wundert sich danach.
-  const noBg = exportScope === "layout";
-  stage.innerHTML = renderSVG({
-    chrome: true,
-    preview: preview || null,
-    bgDim: exportScope === "background",
-    noBg
-  });
-  stage.classList.toggle("checkerboard", noBg || !THEMES[state.theme].primary);
+  stage.innerHTML = renderSVG({ chrome: true, preview: preview || null });
+  stage.classList.toggle("checkerboard", !THEMES[state.theme].primary);
   updateSidebar();
 }
 function scheduleRender(preview) {
