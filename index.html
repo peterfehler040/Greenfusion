@@ -883,11 +883,24 @@ function renderSVG(opts) {
     if (s.type === "white") {
       out += `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="${WHITE_HEX}"${op}${animAttr}/>`;
     } else if (s.type === "dots") {
-      // Pixel-Kachel: feines Dot-Raster, lokal zur (ggf. gebleedeten) Fläche verankert
+      // Pixel-Kachel: feines Dot-Raster, lokal zur (ggf. gebleedeten) Fläche
+      // verankert. Der übliche Halbabstand-Rand (Punkte zentriert in ihrer
+      // Rasterzelle) entfällt an Seiten, die an der echten Dokumentkante
+      // liegen — sonst bleibt dort ein sichtbarer freier Streifen, weil die
+      // Pixel-Kachel selbst kein Hintergrund-Rechteck zeichnet (Peter,
+      // 17.09.2026). Analog zum Basisraster, das an der Kante ebenfalls ohne
+      // Rand bis an die Kante sitzt. An Innenkanten (Nachbarfläche, Basis-
+      // raster) bleibt der Halbabstand unverändert.
       out += `<g fill="${theme.primary ? DOTTILE.color : theme.dot}"${op}${animAttr}>`;
       const sp = DOTTILE.spacing;
-      for (let y = b.y + sp / 2; y <= b.y + b.h - sp / 2 + 0.01; y += sp) {
-        for (let x = b.x + sp / 2; x <= b.x + b.w - sp / 2 + 0.01; x += sp) {
+      const atLeft = b.x === 0, atRight = b.x + b.w === g.W;
+      const atTop = b.y === 0, atBottom = b.y + b.h === g.H;
+      const xStart = b.x + (atLeft ? 0 : sp / 2);
+      const xEnd = b.x + b.w - (atRight ? 0 : sp / 2);
+      const yStart = b.y + (atTop ? 0 : sp / 2);
+      const yEnd = b.y + b.h - (atBottom ? 0 : sp / 2);
+      for (let y = yStart; y <= yEnd + 0.01; y += sp) {
+        for (let x = xStart; x <= xEnd + 0.01; x += sp) {
           out += `<circle cx="${Math.round(x * 100) / 100}" cy="${Math.round(y * 100) / 100}" r="${DOTTILE.r}"/>`;
         }
       }
@@ -1550,10 +1563,19 @@ function clampAspectMod(w, h, maxAspect) {
 
 function generateLayout() {
   const g = geometry();
-  // Der Randomizer erzeugt bewusst keine Bildflächen mehr (Peter, 04.08.2026).
-  // tryGenerate() behält den Parameter, die Bild-Zweige bleiben also intakt,
-  // falls das später zurückkommt.
-  const withImage = false;
+  // Der Randomizer erzeugt selbst keine neuen Bildflächen mehr (Peter, 04.08.2026).
+  // Eine bereits vorhandene Bildfläche wird dadurch aber nicht mehr verworfen —
+  // sie bleibt als fester Anker stehen, die 3 Verlauf- + 1 Pixel-Fläche werden
+  // neu darum herum generiert (Peter, 17.09.2026). Ohne vorhandenes Bild bleibt
+  // das Verhalten wie zuvor: reiner Verlauf-/Pixel-Layout ohne Bild.
+  const imgSurface = state.surfaces.find(s => s.type === "image");
+  const existingImage = imgSurface ? {
+    c0: Math.round((imgSurface.x - g.ox) / g.m),
+    r0: Math.round((imgSurface.y - g.oy) / g.m),
+    w: Math.round(imgSurface.w / g.m),
+    h: Math.round(imgSurface.h / g.m),
+    img: imgSurface.img
+  } : null;
 
   // immer 4 Kacheln: 3 Verläufe + genau 1 Pixel-Kachel (kein Weiß)
   const COMPOSITIONS = [
@@ -1561,7 +1583,7 @@ function generateLayout() {
   ];
 
   for (let attempt = 0; attempt < 300; attempt++) {
-    const result = tryGenerate(g, withImage, pickOne(COMPOSITIONS));
+    const result = tryGenerate(g, existingImage, pickOne(COMPOSITIONS));
     if (result) {
       state.surfaces = result;
       state.selection = [];
@@ -1573,7 +1595,7 @@ function generateLayout() {
   toast("Kein gültiges Layout gefunden — nochmal klicken");
 }
 
-function tryGenerate(g, withImage, composition) {
+function tryGenerate(g, existingImage, composition) {
   const cols = g.cols, rows = g.rows;
   const placed = []; // { c0, r0, w, h, type } in Modulen
 
@@ -1582,30 +1604,30 @@ function tryGenerate(g, withImage, composition) {
     cand.c0 >= 0 && cand.r0 >= 0 && cand.c0 + cand.w <= cols && cand.r0 + cand.h <= rows &&
     !placed.some(p => pxOverlap(cand, p));
 
-  // --- Anker: Bild (falls aktiv, deutlich dominant) oder erste Verlaufsfläche ---
-  let aw, ah;
-  if (withImage) {
-    aw = rnd(Math.round(cols * 0.42), Math.round(cols * 0.58));
-    ah = rnd(Math.round(rows * 0.5), Math.round(rows * 0.7));
+  // --- Anker: vorhandene Bildfläche (fix, unverändert) oder neue Verlaufsfläche
+  //     (zufällig) — der Randomizer würfelt selbst nie eine neue Bildfläche ---
+  let aw, ah, anchor;
+  if (existingImage) {
+    aw = existingImage.w; ah = existingImage.h;
+    anchor = { c0: existingImage.c0, r0: existingImage.r0, w: aw, h: ah, type: "image" };
   } else {
     aw = rnd(Math.round(cols * 0.28), Math.round(cols * 0.42));
     ah = rnd(Math.round(rows * 0.35), Math.round(rows * 0.55));
+    [aw, ah] = clampAspectMod(aw, ah, 1.8);
+    // gewichtet rechts der Mitte, mit mindestens 1 Modul Randabstand
+    const minC = Math.min(Math.round(cols * 0.3), cols - aw - 1);
+    anchor = {
+      c0: rnd(Math.max(1, minC), Math.max(1, cols - aw - 1)),
+      r0: rnd(1, Math.max(1, rows - ah - 1)),
+      w: aw, h: ah, type: "gradient"
+    };
   }
-  [aw, ah] = clampAspectMod(aw, ah, 1.8);
-  const anchorType = withImage ? "image" : "gradient";
-  // gewichtet rechts der Mitte, mit mindestens 1 Modul Randabstand
-  const minC = Math.min(Math.round(cols * 0.3), cols - aw - 1);
-  const anchor = {
-    c0: rnd(Math.max(1, minC), Math.max(1, cols - aw - 1)),
-    r0: rnd(1, Math.max(1, rows - ah - 1)),
-    w: aw, h: ah, type: anchorType
-  };
   if (!fits(anchor)) return null;
   placed.push(anchor);
   const anchorArea = aw * ah;
 
   // --- die 4 Kacheln (bzw. 3 weitere, wenn der Anker schon ein Verlauf ist) ---
-  const tiles = withImage ? composition.slice() : composition.slice(1);
+  const tiles = existingImage ? composition.slice() : composition.slice(1);
 
   for (const type of tiles) {
     let w, h;
@@ -1664,7 +1686,7 @@ function tryGenerate(g, withImage, composition) {
     w: p.w * g.m,
     h: p.h * g.m,
     type: p.type,
-    img: null
+    img: p.type === "image" ? existingImage.img : null
   }));
 }
 
