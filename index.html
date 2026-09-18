@@ -492,7 +492,22 @@ const FORMATS = [
   { label: "1080 × 1350 · 4:5",  w: 1080, h: 1350 }
 ];
 
-const MODULE_SIZE = 90; // Raster: einzelnes festes Modul (Mitte zwischen ehem. Fein 60 und Grob 120)
+// Modulgröße skaliert mit der Dokumentgröße statt fest 90px — "Print vs.
+// Web" (Peter, 18.09.2026): bei kleinen Formaten war das feste 90px-Modul
+// zu grob, der dadurch nötige Restrand ließ die letzte Punktreihe zu weit
+// von der echten Kante entfernt wirken. Gestaffelt nach der kürzeren
+// Dokumentkante — alle vier Presets liegen bei 1080px und bleiben damit
+// unverändert bei 90px, nur kleine Eigene-Größe-Formate werden feiner.
+// Grenzwerte 600/900 sind ein Startwert zum gemeinsamen Austesten.
+const MODULE_TIERS = [
+  { maxShortSide: 600, m: 30 },
+  { maxShortSide: 900, m: 60 },
+  { maxShortSide: Infinity, m: 90 }
+];
+function moduleSizeFor(w, h) {
+  const shortSide = Math.min(w, h);
+  return MODULE_TIERS.find(t => shortSide <= t.maxShortSide).m;
+}
 
 // Harte Grenzen: max. 4 Flächen (Verlauf/Weiß/Pixel) + 1 Bild
 const MAX_SURFACES = 4;
@@ -729,7 +744,7 @@ function formatSize() {
 
 function geometry() {
   const f = formatSize();
-  const m = MODULE_SIZE;
+  const m = moduleSizeFor(f.w, f.h);
   const cols = Math.floor(f.w / m);
   const rows = Math.floor(f.h / m);
   const ox = (f.w - cols * m) / 2;  // Raster zentriert, Rest als Rand
@@ -746,30 +761,6 @@ function snapY(y, g) {
   return g.oy + Math.min(Math.max(j, 0), g.rows) * g.m;
 }
 
-// Magnet-Radius fürs Ziehen (px, Dokumentkoordinaten): nur innerhalb dieses
-// Abstands zu einer Modullinie rastet die Live-Vorschau ein — sonst folgt sie
-// dem Zeiger frei. Bei einem festen 90px-Modul wirkte das bisherige "bei
-// jedem Pixel hart runden" auf kleinen Formaten wie ein ruckartiger Sprung
-// (Leonid Fishman, Meeting 18.09.2026). Der endgültige Zustand landet beim
-// Loslassen weiterhin exakt auf dem Raster (snapX/snapY unten unverändert) —
-// das betrifft nur das Gefühl während des Ziehens.
-const SNAP_RADIUS = 10;
-function snapOrFollow(v, origin, m, radius) {
-  const nearest = origin + Math.round((v - origin) / m) * m;
-  return Math.abs(v - nearest) <= radius ? nearest : v;
-}
-// Wie snapX/snapY, aber mit Magnet-Radius statt hartem Runden — fürs Ziehen.
-// Bounds-Clamp zuerst (wie snapX/snapY), damit die freie Vorschau nie über
-// den Rasterrand hinausläuft, danach erst der Magnet.
-function followOrSnapX(x, g) {
-  const clamped = Math.min(Math.max(x, g.ox), g.ox + g.cols * g.m);
-  return snapOrFollow(clamped, g.ox, g.m, SNAP_RADIUS);
-}
-function followOrSnapY(y, g) {
-  const clamped = Math.min(Math.max(y, g.oy), g.oy + g.rows * g.m);
-  return snapOrFollow(clamped, g.oy, g.m, SNAP_RADIUS);
-}
-
 // Fläche in Rastergrenzen halten und auf Gitter snappen (min. 1 Modul)
 function normalizeSurface(s, g) {
   let x0 = snapX(s.x, g);
@@ -782,22 +773,15 @@ function normalizeSurface(s, g) {
   return s;
 }
 
-// Bleed: Flächen, die am äußersten Rasterrand anliegen, werden NUR fürs
-// Zeichnen bis zur echten Dokumentkante gestreckt (Sonderformate wie
-// 1200×627 haben durch die feste 60px-Modulgröße einen Restrand < 1 Modul,
-// der außerhalb des Rasters liegt und sonst nie erreichbar wäre). Der
-// Zustand (s.x/y/w/h) bleibt unverändert, damit Snapping/Drag/Resize/
-// Randomizer weiter sauber auf dem Modulraster arbeiten — es betrifft
-// ausschließlich renderSVG().
-function bleedRect(s, g) {
-  const gx0 = g.ox, gx1 = g.ox + g.cols * g.m;
-  const gy0 = g.oy, gy1 = g.oy + g.rows * g.m;
-  let x0 = s.x, y0 = s.y, x1 = s.x + s.w, y1 = s.y + s.h;
-  if (Math.abs(x0 - gx0) < 0.5) x0 = 0;
-  if (Math.abs(x1 - gx1) < 0.5) x1 = g.W;
-  if (Math.abs(y0 - gy0) < 0.5) y0 = 0;
-  if (Math.abs(y1 - gy1) < 0.5) y1 = g.H;
-  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+// Liegt die Fläche bereits exakt auf dem (ggf. neuen) Modulraster? Prüft
+// applyFormat() vor einem Formatwechsel — nötig, seit die Modulgröße selbst
+// wechseln kann (moduleSizeFor): normalizeSurface() würde eine nicht mehr
+// passende Fläche sonst stillschweigend auf die neue Rastergröße runden,
+// statt sie wie vorgesehen zu entfernen (Peter, 18.09.2026).
+function alignedToGrid(s, g) {
+  const onGrid = (v, m) => Math.abs(v - Math.round(v / m) * m) < 0.5;
+  return onGrid(s.x - g.ox, g.m) && onGrid(s.y - g.oy, g.m) &&
+         onGrid(s.w, g.m) && onGrid(s.h, g.m);
 }
 
 /* ================= Rendering (Konvention A) =================
@@ -819,7 +803,6 @@ function renderSVG(opts) {
   const preview = opts && opts.preview; // temporäre Fläche beim Zeichnen
   const g = geometry();
   const all = preview ? state.surfaces.concat([preview]) : state.surfaces;
-  const bleeds = all.map(s => bleedRect(s, g)); // Randflächen bis zur Dokumentkante (nur Zeichnung)
 
   const theme = THEMES[state.theme];
   // surfacesOnly = Export "Nur Flächen": alles Hintergründige entfällt — die
@@ -846,7 +829,7 @@ function renderSVG(opts) {
     }
     if (s.type === "image" && s.img) {
       hasImage = true;
-      const bi = bleeds[idx];
+      const bi = all[idx];
       defs += `<clipPath id="clip-${idx}"><rect x="${bi.x}" y="${bi.y}" width="${bi.w}" height="${bi.h}"/></clipPath>`;
     }
   });
@@ -902,7 +885,12 @@ function renderSVG(opts) {
     // Ansicht (chrome), nicht im Export. Wird vom Animations-Player
     // (playAnimation()) genutzt, um das passende DOM-Element zu finden.
     const animAttr = (chrome && !isPreview) ? ` data-anim-idx="${idx}"` : "";
-    const b = bleeds[idx]; // ggf. bis zur echten Dokumentkante gezogen
+    // Flächen rendern exakt an ihrer gesnappten Rasterposition — kein
+    // Bleed mehr bis zur echten Dokumentkante (Leonid Fishman, Meeting
+    // 18.09.2026: Flächen "springen" sonst über die letzte Punktreihe
+    // hinaus zur Kante). Ein Restrand bei Sonderformaten zeigt jetzt den
+    // ohnehin randlos deckenden Hintergrund, statt die Fläche zu strecken.
+    const b = all[idx];
 
     if (s.type === "white") {
       out += `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" fill="${WHITE_HEX}"${op}${animAttr}/>`;
@@ -1052,46 +1040,6 @@ function hitSurface(p) {
   return null;
 }
 
-// Gruppen-Move: aus dem gewünschten Delta (frei oder modul-gerundet) die
-// tatsächlich anwendbare Verschiebung berechnen — Randklemmen + achsenweises
-// Entlanggleiten an Hindernissen. Von pointermove (live, freies Delta) UND
-// pointerup (finaler Hart-Snap) genutzt, damit beide exakt dieselbe Logik
-// durchlaufen (Peter, 18.09.2026).
-function groupMoveDelta(dx, dy, drag, g) {
-  const selSet = new Set(state.selection);
-  drag.orig.forEach(o => {
-    const s = state.surfaces[o.i];
-    if (!s) return;
-    dx = Math.min(Math.max(dx, g.ox - o.x), g.ox + g.cols * g.m - s.w - o.x);
-    dy = Math.min(Math.max(dy, g.oy - o.y), g.oy + g.rows * g.m - s.h - o.y);
-  });
-  const groupFits = (ddx, ddy) =>
-    drag.orig.every(o => {
-      const s = state.surfaces[o.i];
-      return s && !state.surfaces.some((t, j) =>
-        !selSet.has(j) && rectsOverlap({ x: o.x + ddx, y: o.y + ddy, w: s.w, h: s.h }, t)
-      );
-    });
-  const curDx = state.surfaces[drag.orig[0].i].x - drag.orig[0].x;
-  const curDy = state.surfaces[drag.orig[0].i].y - drag.orig[0].y;
-  let ddx = curDx, ddy = curDy;
-  if (groupFits(dx, dy)) { ddx = dx; ddy = dy; }
-  else if (groupFits(dx, curDy)) { ddx = dx; }
-  else if (groupFits(curDx, dy)) { ddy = dy; }
-  return { ddx, ddy };
-}
-
-// Resize: aus der (freien oder modul-gerundeten) losen Ecke + der fixen
-// Gegenecke das Kandidaten-Rechteck bauen, inkl. Mindestgröße 1 Modul.
-// Ebenfalls von pointermove UND pointerup genutzt.
-function resizeCandidate(cx, cy, drag, g) {
-  let x0 = Math.min(cx, drag.fx), x1 = Math.max(cx, drag.fx);
-  let y0 = Math.min(cy, drag.fy), y1 = Math.max(cy, drag.fy);
-  if (x1 - x0 < g.m) { if (cx <= drag.fx) x0 = x1 - g.m; else x1 = x0 + g.m; }
-  if (y1 - y0 < g.m) { if (cy <= drag.fy) y0 = y1 - g.m; else y1 = y0 + g.m; }
-  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-}
-
 const main = document.querySelector("main");
 
 main.addEventListener("pointerdown", (ev) => {
@@ -1105,11 +1053,7 @@ main.addEventListener("pointerdown", (ev) => {
   if (single) {
     const h = hitHandle(p, single);
     if (h) {
-      // orig = Rechteck vor dem Resize; Rückfall, falls die finale, hart
-      // gerundete Position beim Loslassen ausnahmsweise überlappt, obwohl
-      // die letzte weiche Live-Position das nicht tat (Peter, 18.09.2026).
-      drag = { mode: "resize", fx: h.fx, fy: h.fy, moved: false,
-               orig: { x: single.x, y: single.y, w: single.w, h: single.h } };
+      drag = { mode: "resize", fx: h.fx, fy: h.fy, moved: false };
       return;
     }
   }
@@ -1186,11 +1130,8 @@ main.addEventListener("pointermove", (ev) => {
   const g = geometry();
 
   if (drag.mode === "draw") {
-    // Live folgt die Kante frei, solange sie nicht nah an einer Modullinie
-    // ist (SNAP_RADIUS) — der harte Rundungs-Sprung bei jedem Pixel entfällt.
-    // Endgültig gerundet wird erst bei pointerup.
-    drag.curX = followOrSnapX(p.x, g);
-    drag.curY = followOrSnapY(p.y, g);
+    drag.curX = snapX(p.x, g);
+    drag.curY = snapY(p.y, g);
     const x = Math.min(drag.startX, drag.curX);
     const y = Math.min(drag.startY, drag.curY);
     const w = Math.abs(drag.curX - drag.startX);
@@ -1205,18 +1146,36 @@ main.addEventListener("pointermove", (ev) => {
   }
 
   if (drag.mode === "move") {
-    // Gruppen-Move: Delta folgt frei, solange es nicht nah an einem
-    // Modulschritt liegt (SNAP_RADIUS) — Rest (Randklemmen, Entlanggleiten)
-    // unverändert in groupMoveDelta(). Endgültig gerundet erst bei pointerup.
-    const dx = snapOrFollow(p.x - drag.p0x, 0, g.m, SNAP_RADIUS);
-    const dy = snapOrFollow(p.y - drag.p0y, 0, g.m, SNAP_RADIUS);
-    const { ddx, ddy } = groupMoveDelta(dx, dy, drag, g);
+    // Gruppen-Move: Delta in Modulschritten, für alle ausgewählten Flächen
+    const selSet = new Set(state.selection);
+    let dx = Math.round((p.x - drag.p0x) / g.m) * g.m;
+    let dy = Math.round((p.y - drag.p0y) / g.m) * g.m;
+    // so klemmen, dass ALLE Flächen im Raster bleiben
+    drag.orig.forEach(o => {
+      const s = state.surfaces[o.i];
+      if (!s) return;
+      dx = Math.min(Math.max(dx, g.ox - o.x), g.ox + g.cols * g.m - s.w - o.x);
+      dy = Math.min(Math.max(dy, g.oy - o.y), g.oy + g.rows * g.m - s.h - o.y);
+    });
+    const groupFits = (ddx, ddy) =>
+      drag.orig.every(o => {
+        const s = state.surfaces[o.i];
+        return s && !state.surfaces.some((t, j) =>
+          !selSet.has(j) && rectsOverlap({ x: o.x + ddx, y: o.y + ddy, w: s.w, h: s.h }, t)
+        );
+      });
+    // aktuell angewendetes Delta (für achsenweises Entlanggleiten an Kanten)
+    const curDx = state.surfaces[drag.orig[0].i].x - drag.orig[0].x;
+    const curDy = state.surfaces[drag.orig[0].i].y - drag.orig[0].y;
+    let ddx = curDx, ddy = curDy;
+    if (groupFits(dx, dy)) { ddx = dx; ddy = dy; }
+    else if (groupFits(dx, curDy)) { ddx = dx; }
+    else if (groupFits(curDx, dy)) { ddy = dy; }
     drag.orig.forEach(o => {
       const s = state.surfaces[o.i];
       if (s) { s.x = o.x + ddx; s.y = o.y + ddy; }
     });
     drag.moved = true;
-    drag.lastPx = p.x; drag.lastPy = p.y; // für den Hart-Snap bei pointerup
     scheduleRender();
   }
 
@@ -1233,17 +1192,17 @@ main.addEventListener("pointermove", (ev) => {
   if (drag.mode === "resize") {
     const s = sel();
     if (!s) return;
-    // Freie Ecke folgt dem Zeiger, außer nah an einer Modullinie
-    // (SNAP_RADIUS) — Rest unverändert in resizeCandidate(). Endgültig
-    // gerundet erst bei pointerup.
-    const cx = followOrSnapX(p.x, g);
-    const cy = followOrSnapY(p.y, g);
-    const cand = resizeCandidate(cx, cy, drag, g);
+    const cx = snapX(p.x, g);
+    const cy = snapY(p.y, g);
+    let x0 = Math.min(cx, drag.fx), x1 = Math.max(cx, drag.fx);
+    let y0 = Math.min(cy, drag.fy), y1 = Math.max(cy, drag.fy);
+    if (x1 - x0 < g.m) { if (cx <= drag.fx) x0 = x1 - g.m; else x1 = x0 + g.m; }
+    if (y1 - y0 < g.m) { if (cy <= drag.fy) y0 = y1 - g.m; else y1 = y0 + g.m; }
+    const cand = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     if (!overlapsAny(cand, selIdx())) {
       s.x = cand.x; s.y = cand.y; s.w = cand.w; s.h = cand.h;
     }
     drag.moved = true;
-    drag.lastPx = p.x; drag.lastPy = p.y; // für den Hart-Snap bei pointerup
     scheduleRender();
   }
 });
@@ -1253,15 +1212,10 @@ main.addEventListener("pointerup", () => {
   const g = geometry();
 
   if (drag.mode === "draw") {
-    // Beim Loslassen zählt nur noch das Raster — drag.curX/curY konnten
-    // während des Ziehens ein freier Zwischenwert sein (SNAP_RADIUS), die
-    // fertige Fläche landet trotzdem exakt auf einem Modul-Vielfachen.
-    const curX = snapX(drag.curX, g);
-    const curY = snapY(drag.curY, g);
-    const x = Math.min(drag.startX, curX);
-    const y = Math.min(drag.startY, curY);
-    const w = Math.abs(curX - drag.startX);
-    const h = Math.abs(curY - drag.startY);
+    const x = Math.min(drag.startX, drag.curX);
+    const y = Math.min(drag.startY, drag.curY);
+    const w = Math.abs(drag.curX - drag.startX);
+    const h = Math.abs(drag.curY - drag.startY);
     if (w >= g.m && h >= g.m) {
       if (overlapsAny({ x, y, w, h }, -1)) {
         toast("Flächen dürfen sich nicht überlagern");
@@ -1272,38 +1226,6 @@ main.addEventListener("pointerup", () => {
         state.selection = [state.surfaces.length - 1];
         state.nextTypeManual = false; // Auto-Sequenz greift wieder für den nächsten Zug
         commit();
-      }
-    }
-  }
-
-  // Move/Resize liefen live mit freier Zwischenposition (SNAP_RADIUS) — beim
-  // Loslassen dieselbe Logik (groupMoveDelta/resizeCandidate) noch einmal mit
-  // hart gerundeten Werten anwenden, damit die Fläche(n) exakt auf dem
-  // Modulraster landen. drag.lastPx/lastPy sind gesetzt, sobald drag.moved
-  // true ist (Peter, 18.09.2026).
-  if (drag.mode === "move" && drag.moved) {
-    const dx = Math.round((drag.lastPx - drag.p0x) / g.m) * g.m;
-    const dy = Math.round((drag.lastPy - drag.p0y) / g.m) * g.m;
-    const { ddx, ddy } = groupMoveDelta(dx, dy, drag, g);
-    drag.orig.forEach(o => {
-      const s = state.surfaces[o.i];
-      if (s) { s.x = o.x + ddx; s.y = o.y + ddy; }
-    });
-  }
-  if (drag.mode === "resize" && drag.moved) {
-    const s = sel();
-    if (s) {
-      const cx = snapX(drag.lastPx, g);
-      const cy = snapY(drag.lastPy, g);
-      const cand = resizeCandidate(cx, cy, drag, g);
-      if (!overlapsAny(cand, selIdx())) {
-        s.x = cand.x; s.y = cand.y; s.w = cand.w; s.h = cand.h;
-      } else {
-        // Sehr seltener Randfall: die hart gerundete Endposition überlappt,
-        // obwohl die weiche Live-Position das nicht tat — dann lieber den
-        // ganzen Resize verwerfen als eine nicht-rasterkonforme Zwischen-
-        // größe committen.
-        s.x = drag.orig.x; s.y = drag.orig.y; s.w = drag.orig.w; s.h = drag.orig.h;
       }
     }
   }
@@ -1411,16 +1333,24 @@ formatSelect.appendChild(customOption);
 //
 // Der Rasternullpunkt (ox/oy) verschiebt sich je nach Format um bis zu
 // einen halben Modul-Rand (z. B. 16:9 hat 15px Rand links, 1:1 keinen —
-// 1920 ist kein glattes Vielfaches von MODULE_SIZE). Ohne Ausgleich fielen
+// 1920 ist kein glattes Vielfaches des Moduls). Ohne Ausgleich fielen
 // randständige Flächen beim Formatwechsel fälschlich aus dem "passt nicht
 // mehr"-Filter, obwohl objektiv mehr Platz da war (Peter, 30.07.2026:
 // jeder Formatwechsel löschte praktisch alle Flächen). Deshalb: Flächen
 // zuerst um exakt die alte→neue Randverschiebung mitschieben (reine
 // Nullpunkt-Korrektur, keine Verzerrung), erst danach auf echten
 // Platzmangel prüfen.
+//
+// Seit die Modulgröße selbst mit der Dokumentgröße skaliert (moduleSizeFor,
+// Peter, 18.09.2026) gilt die Nullpunkt-Verschiebung nur noch, wenn das
+// Modul GLEICH bleibt — bei einem Modulwechsel hat die Differenz der alten/
+// neuen ox/oy keine sinnvolle Bedeutung mehr. Zusätzlich prüft der Filter
+// jetzt auch, ob eine Fläche noch exakt auf dem (ggf. neuen) Modulraster
+// liegt — sonst könnte normalizeSurface() sie stillschweigend auf die neue
+// Rastergröße runden, statt sie wie vorgesehen zu entfernen.
 function applyFormat(oldG) {
   const g = geometry();
-  if (oldG) {
+  if (oldG && g.m === oldG.m) {
     const dx = g.ox - oldG.ox, dy = g.oy - oldG.oy;
     if (dx || dy) state.surfaces.forEach(s => { s.x += dx; s.y += dy; });
   }
@@ -1428,7 +1358,8 @@ function applyFormat(oldG) {
   state.surfaces = state.surfaces.filter(s =>
     s.x >= g.ox && s.y >= g.oy &&
     s.x + s.w <= g.ox + g.cols * g.m &&
-    s.y + s.h <= g.oy + g.rows * g.m
+    s.y + s.h <= g.oy + g.rows * g.m &&
+    alignedToGrid(s, g)
   );
   state.surfaces.forEach(s => normalizeSurface(s, g));
   const removed = before - state.surfaces.length;
