@@ -742,11 +742,20 @@ function formatSize() {
   return state.customSize || FORMATS[state.formatIndex];
 }
 
+// Mindestabstand der äußersten Punktreihe/-spalte zur echten Dokumentkante,
+// proportional zum Modul. Ohne das hätten Formate, die glatt durch das Modul
+// teilen (z. B. 1080 = 12×90), exakt 0px Rand — "Fläche stoppt an der
+// letzten Punktreihe" (Bleed-Fix) wäre dort nicht von "geht bis zur Kante"
+// zu unterscheiden (Peter, Screenshot 22.09.2026). Erzwingt bei Bedarf eine
+// Spalte/Zeile weniger; das Modul selbst bleibt unverändert (Peter: "Größe
+// des Rasters ist nicht gesetzt, optischer Eindruck soll nur ungefähr
+// erhalten bleiben").
 function geometry() {
   const f = formatSize();
   const m = moduleSizeFor(f.w, f.h);
-  const cols = Math.floor(f.w / m);
-  const rows = Math.floor(f.h / m);
+  const margin = m / 6;
+  const cols = Math.max(1, Math.floor((f.w - 2 * margin) / m));
+  const rows = Math.max(1, Math.floor((f.h - 2 * margin) / m));
   const ox = (f.w - cols * m) / 2;  // Raster zentriert, Rest als Rand
   const oy = (f.h - rows * m) / 2;
   return { W: f.w, H: f.h, m, cols, rows, ox, oy };
